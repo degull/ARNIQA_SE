@@ -1,0 +1,90 @@
+# General settings
+experiment_name: "my_experiment"   # 이름을 바꿔주세요
+device: 0   # GPU id (CUDA가 활성화된 경우) - CPU를 사용하려면 -1로 설정
+seed: 27  # 랜덤 시드 설정
+data_base_path: "E:/ARNIQA/ARNIQA/dataset"  # 데이터셋 경로를 적절히 변경
+
+# Checkpoint settings
+checkpoint_base_path: "E:/ARNIQA/ARNIQA/checkpoints"  # 체크포인트 저장 경로 추가
+checkpoint_frequency: 1  # 에폭마다 체크포인트 저장
+
+# Training
+training:
+  epochs: 10    # 학습할 에폭 수
+  learning_rate: !!float 1e-3    # 학습률 추가
+  batch_size: 16     # 배치 크기
+  lr: !!float 1e-3
+  num_workers: 20   # 데이터 로딩에 사용할 워커 수
+  log_images_frequency: 1000  # 로그에 이미지를 기록할 빈도 (n개의 배치마다)
+  resume_training: false    # 이전 학습을 이어서 할지 여부
+  step_size: 5  # 학습률 조정 주기 추가
+  gamma: 0.1  # 학습률 조정의 감쇠 계수 추가
+
+  data:
+    patch_size: 224   # 패치 크기
+    max_distortions: 4  # 적용할 최대 왜곡 수
+    num_levels: 5   # 고려할 왜곡 수준의 수
+    pristine_prob: 0.05   # 왜곡을 적용하지 않을 확률
+
+  optimizer:
+    name: SGD   # 옵티마이저 종류
+    momentum: 0.9   # 모멘텀 값
+    weight_decay: !!float 1e-4    # 가중치 감소
+
+  lr_scheduler:
+    name: CosineAnnealingWarmRestarts   # 학습률 스케줄러 이름
+    T_0: 1    # CosineAnnealingWarmRestarts의 T_0 값
+    T_mult: 2   # CosineAnnealingWarmRestarts의 T_mult 값
+    eta_min: !!float 1e-6   # 최소 학습률
+
+# Validation
+validation:
+  frequency: 1    # 에폭마다 검증할 빈도
+  num_splits: 10   # 각 데이터셋에 대해 고려할 분할 수
+  alpha: 0.1  # 회귀 분석에 사용할 alpha 값
+  visualize: true   # KADID10K 데이터셋에 대해 t-SNE를 사용한 임베딩 시각화를 할지 여부
+  visualization:
+    tsne:
+      n_components: 3   # t-SNE의 컴포넌트 수
+      perplexity: 30    # t-SNE의 perplexity 값
+      n_iter: 1000    # t-SNE의 반복 횟수
+    umap:
+      n_components: 3   # UMAP의 컴포넌트 수
+      n_neighbors: 25   # UMAP의 이웃 수
+      min_dist: 0.2   # UMAP의 최소 거리
+      metric: euclidean   # UMAP의 메트릭
+  datasets:  # 검증에 사용할 데이터셋 목록
+    #- live
+    #- csiq
+    #- tid2013
+    - kadid10k
+    #- flive
+    # - spaq
+
+# Test
+test:
+  batch_size: 16    # 배치 크기
+  num_workers: 20   # 데이터 로딩에 사용할 워커 수
+  num_splits: 10   # 각 데이터셋에 대해 고려할 분할 수
+  grid_search: true   # 그리드 탐색을 할지 여부
+  alpha: 0.1  # 그리드 탐색을 사용하지 않을 때 사용할 alpha 값
+  crop_size: 224  # 추론할 때 사용할 이미지 크기
+  datasets:  # 테스트에 사용할 데이터셋 목록
+    #- live
+    #- csiq
+    - tid2013
+    - kadid10k
+    #- flive
+    - spaq
+
+# Model
+model:
+  temperature: 0.1    # NT-Xent 손실 함수에 사용할 온도 값
+  encoder:    # 인코더 파라미터
+    embedding_dim: 128    # 임베딩 차원 수
+    pretrained: true    # ImageNet 사전 학습 가중치를 사용할지 여부
+    use_norm: true    # 임베딩을 정규화할지 여부
+
+# Logging
+logging:
+  use_wandb: false   # wandb를 사용할지 여부

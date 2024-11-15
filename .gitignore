@@ -1,0 +1,26 @@
+# 무시할 폴더와 파일들
+assets/
+checkpoints/
+dataset/
+experiments/
+__pycache__/
+변경/
+ddddd.py
+dither_test.py
+hubconf.py
+install_requirements.sh
+
+# 커밋 대상
+!.gitignore
+!README.md
+!config.yaml
+!main.py
+!run_test.py
+!single_image_inference.py
+!train.py
+!원본_train.py
+
+# 커밋할 폴더
+!data/
+!models/
+!utils/
