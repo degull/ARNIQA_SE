@@ -72,10 +72,10 @@ test:
   datasets:  # 테스트에 사용할 데이터셋 목록
     #- live
     #- csiq
-    - tid2013
+    #- tid2013
     - kadid10k
     #- flive
-    - spaq
+    #- spaq
 
 # Model
 model:

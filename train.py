@@ -20,7 +20,7 @@ from tqdm import tqdm
 from data import LIVEDataset, CSIQDataset, TID2013Dataset, KADID10KDataset, FLIVEDataset, SPAQDataset
 from utils.utils import PROJECT_ROOT, parse_command_line_args, merge_configs, parse_config
 from models.simclr import SimCLR
-import os 
+
 synthetic_datasets = ["live", "csiq", "tid2013", "kadid10k"]
 authentic_datasets = ["flive", "spaq"]
 
@@ -28,27 +28,18 @@ def save_checkpoint(model: nn.Module, checkpoint_path: Path, epoch: int, srocc: 
     """모델 체크포인트 저장 함수."""
     filename = f"epoch_{epoch}_srocc_{srocc:.3f}.pth"
     torch.save(model.state_dict(), checkpoint_path / filename)
-    print(f"Checkpoint saved: {checkpoint_path / filename}")  # 저장 메시지 추가
-
 
 def calculate_srcc_plcc(proj_A, proj_B):
+    """SRCC와 PLCC 계산"""
     # 모델 출력값을 넘파이 배열로 변환
     proj_A = proj_A.detach().cpu().numpy()
     proj_B = proj_B.detach().cpu().numpy()
 
     # SRCC 계산
-    try:
-        srocc, _ = stats.spearmanr(proj_A.flatten(), proj_B.flatten())
-    except Exception as e:
-        print(f"Error calculating SRCC: {e}")
-        srocc = float('nan')
+    srocc, _ = stats.spearmanr(proj_A.flatten(), proj_B.flatten())
 
     # PLCC 계산
-    try:
-        plcc, _ = stats.pearsonr(proj_A.flatten(), proj_B.flatten())
-    except Exception as e:
-        print(f"Error calculating PLCC: {e}")
-        plcc = float('nan')
+    plcc, _ = stats.pearsonr(proj_A.flatten(), proj_B.flatten())
 
     return srocc, plcc
 
@@ -61,30 +52,14 @@ def train(args: DotMap,
           lr_scheduler: Optional[torch.optim.lr_scheduler.LRScheduler],
           scaler: torch.cuda.amp.GradScaler,
           device: torch.device) -> None:
-    """
-    Train the given model with the strategy proposed in the paper https://arxiv.org/abs/2310.14918.
 
-    Args:
-        args (DotMap): Training arguments.
-        model (torch.nn.Module): Model to be trained.
-        train_dataloader (torch.utils.data.DataLoader): DataLoader for training.
-        optimizer (torch.optim.Optimizer): Optimizer for training.
-        lr_scheduler (Optional[torch.optim.lr_scheduler.LRScheduler]): Learning rate scheduler.
-        scaler (torch.cuda.amp.GradScaler): Scaler for mixed precision.
-        device (torch.device): Device to use for training.
-    """
     checkpoint_path = Path(args.checkpoint_base_path) / args.experiment_name / "pretrain"
     checkpoint_path.mkdir(parents=True, exist_ok=True)
-    print("Saving checkpoints in folder:", checkpoint_path)
+    print("Saving checkpoints in folder: ", checkpoint_path)
 
-    # Initialize training parameters
-    start_epoch = args.training.start_epoch if args.training.resume_training else 0
+    start_epoch = 0
     max_epochs = args.training.epochs
-    best_srocc = args.best_srocc if args.training.resume_training else 0
-
-    last_srocc, last_plcc = 0, 0
-    last_model_filename = ""
-    best_model_filename = ""
+    best_srocc = 0
 
     for epoch in range(start_epoch, max_epochs):
         model.train()
@@ -94,31 +69,26 @@ def train(args: DotMap,
         for i, batch in enumerate(progress_bar):
             inputs_A_orig = batch["img_A_orig"].to(device=device, non_blocking=True)
             inputs_A_ds = batch["img_A_ds"].to(device=device, non_blocking=True)
-            inputs_A = torch.cat((inputs_A_orig, inputs_A_ds), dim=0)
+
+            # Concatenate along the batch dimension and remove the extra dimension
+            inputs_A = torch.cat((inputs_A_orig, inputs_A_ds), dim=1)
+            inputs_A = inputs_A.view(-1, 4, 3, 224, 224)  # Flatten to [batch_size * 2, num_crops, C, H, W]
 
             inputs_B_orig = batch["img_B_orig"].to(device=device, non_blocking=True)
             inputs_B_ds = batch["img_B_ds"].to(device=device, non_blocking=True)
-            inputs_B = torch.cat((inputs_B_orig, inputs_B_ds), dim=0)
+
+            inputs_B = torch.cat((inputs_B_orig, inputs_B_ds), dim=1)
+            inputs_B = inputs_B.view(-1, 4, 3, 224, 224)  # Flatten to [batch_size * 2, num_crops, C, H, W]
+
+            print(f"Adjusted inputs_A shape: {inputs_A.shape}, inputs_B shape: {inputs_B.shape}")
 
             # Zero the parameter gradients
             optimizer.zero_grad()
 
             # Forward + backward + optimize
-            with torch.cuda.amp.autocast():
-                print(f"Before passing to model - inputs_A shape: {inputs_A.shape}, inputs_B shape: {inputs_B.shape}")
-                
-                # Reshape inputs as per model requirements
-                batch_size = inputs_A.shape[0]
-                num_crops = inputs_A.shape[2]
-                inputs_A = inputs_A.reshape(batch_size, num_crops, 3, 224, 224)
-                inputs_B = inputs_B.reshape(batch_size, num_crops, 3, 224, 224)
-                
+            with torch.amp.autocast(device_type='cuda'):
                 proj_A, proj_B = model(inputs_A, inputs_B)
                 loss = model.compute_loss(proj_A, proj_B)
-
-                # SRCC 및 PLCC 계산
-                srocc, plcc = calculate_srcc_plcc(proj_A, proj_B)
-                print(f"SRCC: {srocc}, PLCC: {plcc}")
 
             if torch.isnan(loss):
                 raise ValueError("Loss is NaN")
@@ -127,46 +97,18 @@ def train(args: DotMap,
             scaler.step(optimizer)
             scaler.update()
 
-            if lr_scheduler and lr_scheduler.__class__.__name__ == "CosineAnnealingWarmRestarts":
-                lr_scheduler.step(epoch + i / len(train_dataloader))
-
             cur_loss = loss.item()
             running_loss += cur_loss
-            progress_bar.set_postfix(loss=running_loss / (i + 1), SROCC=last_srocc, PLCC=last_plcc)
 
-        # Step the scheduler if not CosineAnnealingWarmRestarts
-        if lr_scheduler and lr_scheduler.__class__.__name__ != "CosineAnnealingWarmRestarts":
-            lr_scheduler.step()
+            # SRCC 및 PLCC 계산
+            srocc, plcc = calculate_srcc_plcc(proj_A, proj_B)
+            progress_bar.set_postfix(loss=running_loss / (i + 1), SRCC=srocc, PLCC=plcc)
 
-        # Validation
-        if epoch % args.validation.frequency == 0:
-            print("Starting validation...")
-            last_srocc, last_plcc = validate(args, model, None, i, device)
-
-        # Save best checkpoint
-        if last_srocc > best_srocc:
-            best_srocc = last_srocc
-            if best_model_filename:
-                os.remove(checkpoint_path / best_model_filename)
-            best_model_filename = f"best_epoch_{epoch}_srocc_{best_srocc:.3f}_plcc_{last_plcc:.3f}.pth"
-            torch.save(model.state_dict(), checkpoint_path / best_model_filename)
-
-        # Save last checkpoint
-        if last_model_filename:
-            os.remove(checkpoint_path / last_model_filename)
-        last_model_filename = f"last_epoch_{epoch}_srocc_{last_srocc:.3f}_plcc_{last_plcc:.3f}.pth"
-        torch.save({"model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "scaler_state_dict": scaler.state_dict(),
-                    "epoch": epoch,
-                    "config": args}, checkpoint_path / last_model_filename)
+        # Save checkpoints at regular intervals
+        if epoch % args.checkpoint_frequency == 0:
+            save_checkpoint(model, checkpoint_path, epoch, srocc)
 
     print('Finished training')
-
-
-
-
-
 
 def validate(args: DotMap,
              model: nn.Module,
@@ -174,7 +116,7 @@ def validate(args: DotMap,
     model.eval()
     
     # KADID10K 데이터셋 및 SPAQ 데이터셋 사용
-    datasets = ['kadid10k', 'spaq']
+    datasets = ['kadid10k']
     for dataset_name in datasets:
         print(f"Validating dataset: {dataset_name}")
 
@@ -507,12 +449,12 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 데이터 로더 설정
-    train_dataset = KADID10KDataset(args.data_base_path / "KADID10K", phase="train")
+    train_dataset = KADID10KDataset(Path('E:/ARNIQA/ARNIQA/dataset/KADID10K'), phase="train")
     train_dataloader = DataLoader(train_dataset, batch_size=args.training.batch_size, shuffle=True, num_workers=args.training.num_workers)
 
     # SPAQDataset 로드
-    spaq_dataset = SPAQDataset(root='E:/ARNIQA/ARNIQA/dataset/SPAQ', phase='train')
-    print(f"Loaded {len(spaq_dataset)} images from SPAQDataset.")
+    #spaq_dataset = SPAQDataset(root='E:/ARNIQA/ARNIQA/dataset/SPAQ', phase='train')
+    #print(f"Loaded {len(spaq_dataset)} images from SPAQDataset.")
 
     # Optimizer 및 모델 초기화
     model = SimCLR(encoder_params=args.model.encoder, temperature=args.model.temperature)
@@ -524,4 +466,3 @@ if __name__ == "__main__":
 
     # 훈련 시작
     train(args, model, train_dataloader, optimizer, lr_scheduler, scaler, device)
-
