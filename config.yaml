@@ -61,7 +61,8 @@ validation:
       min_dist: 0.1   # 최소 거리 (기존 0.2 → 0.1)
       metric: euclidean   # 거리 메트릭
   datasets:  # 검증 데이터셋
-    - spaq
+    - kadid
+    - tid2013
 
 
 # Test
@@ -73,7 +74,8 @@ test:
   alpha: 0.1  # 회귀 분석 alpha 값
   crop_size: 224  # 이미지 크기
   datasets:  # 테스트 데이터셋
-    - spaq
+    - kadid
+    - tid2013
 
 # Model
 model:
