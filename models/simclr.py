@@ -76,61 +76,69 @@ if __name__ == "__main__":
     print(f"proj_A shape: {proj_A.shape}, proj_B shape: {proj_B.shape}")
  """
 
+# SimCLR 수정
 import torch
 import torch.nn as nn
 from dotmap import DotMap
 from models.resnet import ResNetSE
 
+
 class SimCLR(nn.Module):
-    def __init__(self, encoder_params: DotMap, temperature: float = 0.1):
+    def __init__(self, encoder_params: DotMap, temperature: float = 0.5):
         super(SimCLR, self).__init__()
-        self.encoder = ResNetSE(embedding_dim=encoder_params.embedding_dim,
-                                pretrained=encoder_params.pretrained,
-                                use_norm=encoder_params.use_norm)
+        self.encoder = ResNetSE(
+            embedding_dim=encoder_params.embedding_dim,
+            pretrained=encoder_params.pretrained,
+            use_norm=encoder_params.use_norm
+        )
         self.temperature = temperature
 
     def forward(self, img_A, img_B):
         if img_A.dim() != 5 or img_B.dim() != 5:
-            raise ValueError("Input images must have dimensions [batch_size, num_crops, 3, H, W].")
+            raise ValueError(
+                f"Input images must have dimensions [batch_size, num_crops, 3, H, W], "
+                f"but got {img_A.size()} and {img_B.size()}."
+            )
+
         batch_size, num_crops, C, H, W = img_A.size()
+
         proj_A, _ = self.encoder(img_A.view(-1, C, H, W))
         proj_B, _ = self.encoder(img_B.view(-1, C, H, W))
+
         return proj_A.view(batch_size, num_crops, -1), proj_B.view(batch_size, num_crops, -1)
 
     def compute_loss(self, proj_q, proj_p):
         return self.nt_xent_loss(proj_q, proj_p)
 
-    def nt_xent_loss(self, a: torch.Tensor, b: torch.Tensor, tau: float = 0.1) -> torch.Tensor:
-        # Ensure a and b are normalized
-        a = a.view(a.size(0), -1)  # Flatten to [batch_size, embed_dim]
-        b = b.view(b.size(0), -1)
+    def nt_xent_loss(self, a: torch.Tensor, b: torch.Tensor, tau: float = 0.5) -> torch.Tensor:
+        a = a.view(a.size(0), -1)  # [batch_size, embedding_dim]
+        b = b.view(b.size(0), -1)  # [batch_size, embedding_dim]
 
-        a_norm = a.norm(dim=1, keepdim=True) + 1e-8  # Avoid division by zero
+        a_norm = a.norm(dim=1, keepdim=True) + 1e-8
         b_norm = b.norm(dim=1, keepdim=True) + 1e-8
 
-        a_cap = a / a_norm
-        b_cap = b / b_norm
+        a_cap = a / a_norm  # Normalize a
+        b_cap = b / b_norm  # Normalize b
 
-        # Combine embeddings
-        a_cap_b_cap = torch.cat([a_cap, b_cap], dim=0)
+        # Concatenate a and b for similarity calculation
+        a_cap_b_cap = torch.cat([a_cap, b_cap], dim=0)  # [2 * batch_size, embedding_dim]
 
-        # Compute similarity matrix
-        sim = torch.mm(a_cap_b_cap, a_cap_b_cap.t()) / tau
+        sim = torch.mm(a_cap_b_cap, a_cap_b_cap.t()) / tau  # Cosine similarity matrix
+        batch_size = a.size(0)
 
-        # Mask to avoid self-similarity in numerator
-        batch_size = a_cap.size(0)
-        mask = torch.eye(batch_size * 2, device=a.device).bool()
+        # Create mask to exclude self-similarities
+        mask = torch.eye(2 * batch_size, device=a.device).bool()
 
-        # Exponentiate and mask diagonal
+        # Correct similarity calculation
         exp_sim = torch.exp(sim)
-        exp_sim = exp_sim.masked_fill(mask, 0)
+        exp_sim = exp_sim.masked_fill(mask, 0)  # Set diagonal to 0
 
-        # Calculate loss
-        numerators = torch.exp(sim[~mask].view(batch_size * 2, -1))
-        denominators = exp_sim.sum(dim=1, keepdim=True)  # 여기서 keepdim=True 추가
+        numerators = torch.exp(torch.diag(sim, batch_size) + torch.diag(sim, -batch_size))
+        denominators = exp_sim.sum(dim=1, keepdim=True)
+
+        # Adjust size if numerators or denominators mismatch
+        if numerators.size(0) != denominators.size(0):
+            numerators = numerators[:denominators.size(0)]  # Trim numerators to match
 
         loss = -torch.log(numerators / denominators)
-        print(f"Numerators shape: {numerators.shape}, Denominators shape: {denominators.shape}")
-
-        
         return loss.mean()
