@@ -107,6 +107,11 @@ class ResNetSE(nn.Module):
         else:
             return f, g
  """
+
+import os
+import sys
+sys.path.append(os.path.abspath("E:/ARNIQA - SE/ARNIQA/models"))  # 절대경로를 사용하여 경로 추가
+
 import torch
 import torch.nn as nn
 import torchvision
@@ -160,8 +165,8 @@ class Bottleneck(nn.Module):
         out = self.relu(out)
 
         return out
-    
 
+    
 class ResNetSE(nn.Module):
     def __init__(self, embedding_dim: int, pretrained: bool = True, use_norm: bool = True):
         super(ResNetSE, self).__init__()
@@ -226,3 +231,11 @@ class ResNetSE(nn.Module):
 
         g = self.projector(f)
         return f, nn.functional.normalize(g, dim=1) if self.use_norm else g
+
+# ResNetSE 모델 구조를 출력하는 코드 추가
+if __name__ == "__main__":
+    # 모델 초기화
+    model = ResNetSE(embedding_dim=128, pretrained=True)
+    
+    # 모델 구조 출력
+    print(model)

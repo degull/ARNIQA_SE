@@ -142,3 +142,7 @@ class SimCLR(nn.Module):
 
         loss = -torch.log(numerators / denominators)
         return loss.mean()
+
+    def get_gradcam_target_layer(self):
+        # Return the target layer for Grad-CAM visualization (e.g., last convolutional layer)
+        return self.encoder.layer4[2].conv3

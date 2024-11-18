@@ -160,7 +160,6 @@ if __name__ == "__main__":
  """
 
 # TID2013Dataset 클래스
-
 import os
 import pandas as pd
 import numpy as np
@@ -169,16 +168,46 @@ import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
 
+# Distortion types mapping
+distortion_types_mapping = {
+    1: "gaussian_blur",
+    2: "lens_blur",
+    3: "motion_blur",
+    4: "color_diffusion",
+    5: "color_shift",
+    6: "color_quantization",
+    7: "color_saturation_1",
+    8: "color_saturation_2",
+    9: "jpeg2000",
+    10: "jpeg",
+    11: "white_noise",
+    12: "white_noise_color_component",
+    13: "impulse_noise",
+    14: "multiplicative_noise",
+    15: "denoise",
+    16: "brighten",
+    17: "darken",
+    18: "mean_shift",
+    19: "jitter",
+    20: "non_eccentricity_patch",
+    21: "pixelate",
+    22: "quantization",
+    23: "color_block",
+    24: "high_sharpen",
+    25: "contrast_change"
+}
+
 class TID2013Dataset(Dataset):
     def __init__(self, root, phase="train", crop_size=224, transform=None):
         self.root = root
         self.phase = phase
         self.crop_size = crop_size
-        self.transform = transform if transform else transforms.Compose([
+        self.transform = transform if transform else transforms.Compose([ 
             transforms.Resize((crop_size, crop_size)),
             transforms.ToTensor()
         ])
 
+        # Load scores from CSV
         scores_csv = pd.read_csv(os.path.join(root, "mos.csv"))
         self.images = scores_csv["image_id"].values
         self.mos = scores_csv["mean"].values
@@ -189,19 +218,24 @@ class TID2013Dataset(Dataset):
         return len(self.images)
 
     def load_image(self, path):
-        """이미지를 로드하고 필요시 변환합니다."""
+        """Load and transform an image."""
         image = Image.open(path).convert("RGB")
         if self.transform:
             image = self.transform(image)
-        return image  # [3, H, W] 형식 유지
+        return image  # [3, H, W] format
 
     def __getitem__(self, index):
+        # Load original distorted and reference images
         img_A_orig = self.load_image(self.image_paths[index])
-        img_A_ds = self.load_image(self.reference_paths[index])
+        img_A_ds = self.load_image(self.reference_paths[index])  # Reference image
         mos = torch.tensor(self.mos[index], dtype=torch.float32)
+
+        # Since the dataset only has img_A_ds, use it for both img_B_ds and img_A_ds
+        img_B_ds = img_A_ds  # You may change this depending on your requirement
 
         return {
             "img_A_orig": img_A_orig,
-            "img_A_ds": img_A_ds,
+            "img_A_ds": img_A_ds,  # Using img_A_ds for reference image
+            "img_B_ds": img_B_ds,  # Add img_B_ds
             "mos": mos
         }

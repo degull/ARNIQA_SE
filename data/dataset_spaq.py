@@ -1,4 +1,3 @@
-import sys
 import os
 import pandas as pd
 import numpy as np
@@ -6,9 +5,6 @@ from PIL import Image
 import torch
 from torchvision import transforms
 from data.dataset_base_iqa import IQADataset
-
-# 현재 파일의 상위 디렉토리를 PYTHONPATH에 추가
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 def center_corners_crop(image: Image, crop_size: int) -> list:
     """

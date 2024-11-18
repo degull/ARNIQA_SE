@@ -14,7 +14,7 @@ training:
   learning_rate: !!float 1e-4    # 학습률 (기존 1e-3 → 1e-4로 감소, 안정적 학습을 위해 조정)
   batch_size: 8     # 배치 크기 (기존 16 → 32로 증가, GPU 메모리 확인 필요)
   lr: !!float 1e-4   # 동일한 학습률 사용
-  num_workers: 20   # 데이터 로딩 워커 수 (기존 20 → 8로 감소, 과도한 병렬 처리 방지)
+  num_workers: 4   # 데이터 로딩 워커 수 (기존 20 → 8로 감소, 과도한 병렬 처리 방지)
   log_images_frequency: 500  # 로그 이미지 빈도 (기존 1000 → 500으로 조정)
   resume_training: false    # 학습 재개 여부
   step_size: 5  # 학습률 감소 주기
@@ -61,7 +61,7 @@ validation:
       min_dist: 0.1   # 최소 거리 (기존 0.2 → 0.1)
       metric: euclidean   # 거리 메트릭
   datasets:  # 검증 데이터셋
-    - kadid10k
+    - spaq
 
 
 # Test
@@ -73,7 +73,7 @@ test:
   alpha: 0.1  # 회귀 분석 alpha 값
   crop_size: 224  # 이미지 크기
   datasets:  # 테스트 데이터셋
-    - kadid10k
+    - spaq
 
 # Model
 model:
