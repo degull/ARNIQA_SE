@@ -1,3 +1,12 @@
+# 입력 채널을 기반으로 Global Average Pooling을 수행한 뒤, 2개의 Fully Connected(FC) 레이어를 통해 중요도를 학습하여 입력 Feature Map에 곱합
+# Global Average Pooling: 채널별 전역 평균을 계산하여 공간적 정보를 압축.
+# FC 레이어 (2개):
+# 첫 번째 FC 레이어: 채널 수를 축소 (reduction 비율 사용).
+# ReLU 활성화 적용.
+# 두 번째 FC 레이어: 채널 수를 복구.
+# Sigmoid 활성화: 채널별 중요도를 [0, 1] 범위로 압축.
+# 재스케일링: SEBlock 출력은 입력 Feature Map에 채널별 중요도를 곱한 결과입니다.
+
 import torch
 import torch.nn as nn
 

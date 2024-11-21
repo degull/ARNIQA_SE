@@ -63,6 +63,7 @@ validation:
   datasets:  # 검증 데이터셋
     - kadid
     - tid2013
+    - koniq
 
 
 # Test
@@ -76,6 +77,7 @@ test:
   datasets:  # 테스트 데이터셋
     - kadid
     - tid2013
+    - koniq
 
 # Model
 model:

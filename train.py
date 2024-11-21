@@ -385,7 +385,8 @@ if __name__ == "__main__":
 
 #tid2013
 
-""" import torch
+""" 
+import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
@@ -767,6 +768,7 @@ if __name__ == "__main__":
  """
 
 
+
 # kadid train & tid Test
 """ import torch
 import torch.nn as nn
@@ -1136,7 +1138,7 @@ if __name__ == "__main__":
  """
 
 # tid train& kadid test
-import torch
+""" import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
@@ -1498,3 +1500,4 @@ if __name__ == "__main__":
 
     # 훈련 시작
     train(args, model, train_dataloader, optimizer, lr_scheduler, scaler, device)
+ """
