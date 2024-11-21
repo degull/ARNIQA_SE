@@ -3,7 +3,7 @@
 ## 양성 쌍 훈련에서는 proj_A와 proj_B가 서로 같은 이미지를 나타내니까, 모델은 두 벡터의 거리가 가까워지도록 학습해야 함
 
 # kadid
-""" import torch
+import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
@@ -367,7 +367,8 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 데이터 로더 설정
-    train_dataset = KADID10KDataset(Path('E:/ARNIQA/ARNIQA/dataset/KADID'), phase="train")
+    train_dataset = KADID10KDataset(Path('E:/ARNIQA - SE/ARNIQA/dataset/KADID10K'), phase="train")
+
     train_dataloader = DataLoader(train_dataset, batch_size=args.training.batch_size, shuffle=True, num_workers=args.training.num_workers)
 
     # Optimizer 및 모델 초기화
@@ -381,7 +382,6 @@ if __name__ == "__main__":
     # 훈련 시작
     train(args, model, train_dataloader, optimizer, lr_scheduler, scaler, device)
 
-     """
 
 #tid2013
 
