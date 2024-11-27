@@ -1,3 +1,15 @@
+# dropout : 0.1
+# Epoch [1] Validation Results: SRCC = 0.9342, PLCC = 0.9465
+# Epoch [2] Validation Results: SRCC = 0.9399, PLCC = 0.9524
+# Epoch [3] Validation Results: SRCC = 0.9466, PLCC = 0.9673
+# Epoch [4] Validation Results: SRCC = 0.9341, PLCC = 0.9672
+# Epoch [5] Validation Results: SRCC = 0.9251, PLCC = 0.9593
+# Epoch [9] Validation Results: SRCC = 0.9175, PLCC = 0.9676
+# Epoch [10] Validation Results: SRCC = 0.9228, PLCC = 0.9704
+# Test Results - SRCC: 0.9282, PLCC: 0.9740
+
+
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
