@@ -57,12 +57,19 @@ def merge_configs(config: DotMap, args: DotMap) -> DotMap:
             full_key = f'{prefix}.{key}' if prefix else key
             if isinstance(value, dict):
                 get_updates(value, args, prefix=full_key)
-            elif getattr(args, full_key, None) or getattr(args, full_key, None) != getattr(section, key, None):
-                keys_to_modify.append((full_key, getattr(args, full_key)))
+            else:
+                # 커맨드라인 인수가 설정 파일 값과 다르면 병합 대상에 추가
+                if hasattr(args, full_key) and getattr(args, full_key) is not None:
+                    keys_to_modify.append((full_key, getattr(args, full_key)))
 
+    # 설정 병합 시작
     get_updates(config, args)
 
     for key, value in keys_to_modify:
         update_config(config, key, value)
+
+    # experiment_name 기본값 설정
+    if not hasattr(args, 'ARNIQA_Experiment') or not args.experiment_name:
+        config.experiment_name = config.get('ARNIQA_Experiment', 'default_experiment')
 
     return config

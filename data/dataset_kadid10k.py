@@ -245,17 +245,12 @@ class KADID10KDataset(Dataset):
         img_A = torch.stack(crops_A)  # Shape: [num_crops, 3, crop_size, crop_size]
         img_B = torch.stack(crops_B)  # Shape: [num_crops, 3, crop_size, crop_size]
 
-        # Reshape to [1, num_crops, 3, crop_size, crop_size]
-        img_A = img_A.unsqueeze(0)
-        img_B = img_B.unsqueeze(0)
-
         return {
-            "img_A_orig": img_A,
-            "img_B_orig": img_B,
-            "img_A_ds": img_A,  # img_A_ds를 추가합니다
-            "img_B_ds": img_B,  # img_B_ds를 추가합니다
+            "img_A": img_A,  # Replace img_A_orig with img_A
+            "img_B": img_B,  # Replace img_B_orig with img_B
             "mos": self.mos[index],
         }
+
 
     def __len__(self):
         return len(self.images)
@@ -264,3 +259,6 @@ class KADID10KDataset(Dataset):
         split_file_path = self.root / "splits" / f"{phase}.npy"
         split_indices = np.load(split_file_path)[split]
         return split_indices
+    
+
+    

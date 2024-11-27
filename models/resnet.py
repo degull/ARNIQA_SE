@@ -249,6 +249,7 @@ import torch.nn.functional as F
 import torchvision
 from torchvision.models import resnet50
 import torch
+
 class ResNet(nn.Module):
     """
     ResNet model with a projection head.
@@ -262,41 +263,60 @@ class ResNet(nn.Module):
         self.pretrained = pretrained
         self.use_norm = use_norm
         self.embedding_dim = embedding_dim
+
+        # Load ResNet-50 with or without pretrained weights
         if self.pretrained:
-            weights = torchvision.models.ResNet50_Weights.IMAGENET1K_V1   # V1 weights work better than V2
+            weights = torchvision.models.ResNet50_Weights.IMAGENET1K_V1
         else:
             weights = None
         self.model = resnet50(weights=weights)
+
+        # Extract feature dimension from ResNet
         self.feat_dim = self.model.fc.in_features
-        self.model = nn.Sequential(*list(self.model.children())[:-1])
+
+        # Remove the fully connected layer and replace with a custom projection head
+        self.model = nn.Sequential(*list(self.model.children())[:-1])  # Remove FC layer and AvgPool
+
+        # Define the projection head
         self.projector = nn.Sequential(
-            nn.Linear(self.feat_dim, self.feat_dim),
+            nn.Linear(self.feat_dim, self.feat_dim * 2),  # 차원 확장
             nn.ReLU(),
-            nn.Linear(self.feat_dim, self.embedding_dim)
+            nn.Linear(self.feat_dim * 2, self.embedding_dim),
+            nn.BatchNorm1d(self.embedding_dim),  # 배치 정규화 추가
         )
+
+
     def forward(self, x):
-        f = self.model(x)
-        f = f.view(-1, self.feat_dim)
+        # Extract features from ResNet
+        f = self.model(x)  # Feature map from ResNet
+        f = f.view(-1, self.feat_dim)  # Flatten to [batch_size, feat_dim]
+
+        # Normalize if use_norm is True
         if self.use_norm:
             f = F.normalize(f, dim=1)
+
+        # Pass through the projection head
         g = self.projector(f)
+
+        # Normalize the output of the projection head if use_norm is True
         if self.use_norm:
             return f, F.normalize(g, dim=1)
         else:
             return f, g
-        
-""" if __name__ == "__main__":
-    # 모델 인스턴스 생성
-    model = ResNet(embedding_dim=128, pretrained=True, use_norm=True)
-    # 포함된 레이어 확인
-    print(model)
- """
+
+# Testing the model
 if __name__ == "__main__":
-    # 모델 인스턴스 생성
-    model = ResNet(embedding_dim=128, pretrained=True, use_norm=True)
-    
-    # 샘플 입력 생성 (배치 크기 1, 3채널, 224x224 크기의 이미지)
+    # Create ResNet instance with normalization enabled/disabled
+    model_with_norm = ResNet(embedding_dim=128, pretrained=True, use_norm=True)
+    model_without_norm = ResNet(embedding_dim=128, pretrained=True, use_norm=False)
+
+    # Sample input
     sample_input = torch.randn(1, 3, 224, 224)
-    f, g = model(sample_input)  # `forward`에서 두 출력이 반환됨
-    # 출력 형태 확인
-    print(f"f shape: {f.shape}, g shape: {g.shape}")  # (1, feat_dim), (1, embedding_dim)
+
+    # Test forward pass with normalization enabled
+    f_norm, g_norm = model_with_norm(sample_input)
+    print(f"With normalization - f shape: {f_norm.shape}, g shape: {g_norm.shape}")
+
+    # Test forward pass with normalization disabled
+    f_no_norm, g_no_norm = model_without_norm(sample_input)
+    print(f"Without normalization - f shape: {f_no_norm.shape}, g shape: {g_no_norm.shape}")
