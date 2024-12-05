@@ -41,25 +41,42 @@ distortion_types_mapping = {
 
 class KADID10KDataset(Dataset):
     def __init__(self, root: str, phase: str = "train", split_idx: int = 0, crop_size: int = 224):
+        """
+        Initialize the KADID10KDataset.
+        
+        Args:
+            root (str): Path to the dataset directory or directly to the CSV file.
+            phase (str): One of "train", "val", "test", or "all".
+            split_idx (int): Index of the dataset split to use.
+            crop_size (int): Size to which images will be cropped/resized.
+        """
         super().__init__()
         self.root = Path(root)
         self.phase = phase
         self.crop_size = crop_size
 
-        # CSV 파일에서 점수 로드
-        scores_csv = pd.read_csv(self.root / "kadid10k.csv")
+        # Check if root is a file (CSV path) or directory
+        if self.root.is_file():
+            csv_path = self.root
+            self.dataset_root = self.root.parent  # Parent directory of the CSV file
+        else:
+            csv_path = self.root / "kadid10k.csv"
+            self.dataset_root = self.root
+
+        # Load scores from CSV
+        scores_csv = pd.read_csv(csv_path)
         scores_csv = scores_csv[["dist_img", "ref_img", "dmos"]]
 
-        # 이미지 경로 설정
-        self.images = np.array([self.root / "images" / img for img in scores_csv["dist_img"].values])
-        self.ref_images = np.array([self.root / "images" / img for img in scores_csv["ref_img"].values])
+        # Set image paths
+        self.images = np.array([self.dataset_root / "images" / img for img in scores_csv["dist_img"].values])
+        self.ref_images = np.array([self.dataset_root / "images" / img for img in scores_csv["ref_img"].values])
         self.mos = np.array(scores_csv["dmos"].values.tolist())
 
         self.distortion_types = []
         self.distortion_levels = []
 
         for img in self.images:
-            # 이미지 이름에서 왜곡 유형과 레벨 추출
+            # Extract distortion type and level from image name
             match = re.search(r'I\d+_(\d+)_(\d+)\.png$', str(img))
             if match:
                 dist_type = distortion_types_mapping[int(match.group(1))]
@@ -69,14 +86,19 @@ class KADID10KDataset(Dataset):
         self.distortion_types = np.array(self.distortion_types)
         self.distortion_levels = np.array(self.distortion_levels)
 
+        # Handle train/val/test splits
         if self.phase != "all":
-            split_idxs = np.load(self.root / "splits" / f"{self.phase}.npy")[split_idx]
-            split_idxs = np.array(list(filter(lambda x: x != -1, split_idxs)))  # 패딩 제거
+            split_file_path = self.dataset_root / "splits" / f"{self.phase}.npy"
+            if not split_file_path.exists():
+                raise FileNotFoundError(f"Split file not found: {split_file_path}")
+            split_idxs = np.load(split_file_path)[split_idx]
+            split_idxs = np.array(list(filter(lambda x: x != -1, split_idxs)))  # Remove padding indices
             self.images = self.images[split_idxs]
             self.ref_images = self.ref_images[split_idxs]
             self.mos = self.mos[split_idxs]
             self.distortion_types = self.distortion_types[split_idxs]
             self.distortion_levels = self.distortion_levels[split_idxs]
+
 
     def transform(self, image: Image) -> torch.Tensor:
         # Transform image to desired size and convert to tensor
@@ -85,6 +107,19 @@ class KADID10KDataset(Dataset):
             transforms.ToTensor(),
         ])(image)
     
+    def apply_random_distortions(image, num_distortions=4):
+        distortions = [
+            lambda img: img.filter(ImageFilter.GaussianBlur(radius=2)),
+            lambda img: img.rotate(15),
+            lambda img: img.filter(ImageFilter.UnsharpMask(radius=2, percent=150)),
+            lambda img: img.resize((int(img.width * 0.8), int(img.height * 0.8))),
+        ]
+        for _ in range(num_distortions):
+            distortion = random.choice(distortions)
+            image = distortion(image)
+        return image
+
+
     def apply_distortion(self, image: torch.Tensor) -> torch.Tensor:
         pil_image = transforms.ToPILImage()(image)
         distortions = [
@@ -102,28 +137,22 @@ class KADID10KDataset(Dataset):
 
 
 
-    def __getitem__(self, index: int) -> dict:
+    def __getitem__(self, index: int):
         img_A_orig = Image.open(self.images[index]).convert("RGB")
         img_B_orig = Image.open(self.ref_images[index]).convert("RGB")
 
+        # 경음성 쌍: 50% 축소
+        img_A_cropped = img_A_orig.resize((img_A_orig.width // 2, img_A_orig.height // 2))
+        img_B_cropped = img_B_orig.resize((img_B_orig.width // 2, img_B_orig.height // 2))
+
         img_A_orig = self.transform(img_A_orig)
         img_B_orig = self.transform(img_B_orig)
-
-        # Create crops and stack images
-        crops_A = [img_A_orig]
-        crops_B = [img_B_orig]
-
-        # Apply additional crops
-        crops_A += [self.apply_distortion(img_A_orig) for _ in range(3)]
-        crops_B += [self.apply_distortion(img_B_orig) for _ in range(3)]
-
-        # Stack crops
-        img_A = torch.stack(crops_A)  # Shape: [num_crops, 3, crop_size, crop_size]
-        img_B = torch.stack(crops_B)  # Shape: [num_crops, 3, crop_size, crop_size]
+        img_A_cropped = self.transform(img_A_cropped)
+        img_B_cropped = self.transform(img_B_cropped)
 
         return {
-            "img_A": img_A,  # Replace img_A_orig with img_A
-            "img_B": img_B,  # Replace img_B_orig with img_B
+            "img_A": torch.stack([img_A_orig, img_A_cropped]),
+            "img_B": torch.stack([img_B_orig, img_B_cropped]),
             "mos": self.mos[index],
         }
 

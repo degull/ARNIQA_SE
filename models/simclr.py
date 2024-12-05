@@ -3,6 +3,7 @@ import torch.nn as nn
 from dotmap import DotMap
 import sys
 import os
+import torch.nn.functional as F
 
 # 현재 파일의 상위 디렉토리를 PYTHONPATH에 추가
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -30,9 +31,9 @@ class SimCLR(nn.Module):
         # 디버깅: 변환 전 차원 확인
         print(f"Before view - img_A shape: {img_A.shape}, img_B shape: {img_B.shape}")
 
-        # Encoder를 통해 feature 추출
-        proj_A = self.encoder(img_A.view(-1, C, H, W))  # [batch_size * num_crops, embedding_dim]
-        proj_B = self.encoder(img_B.view(-1, C, H, W))  # [batch_size * num_crops, embedding_dim]
+        # `contiguous()` 호출 후 `view` 사용
+        proj_A = self.encoder(img_A.contiguous().view(-1, C, H, W))  # [batch_size * num_crops, embedding_dim]
+        proj_B = self.encoder(img_B.contiguous().view(-1, C, H, W))  # [batch_size * num_crops, embedding_dim]
 
         # proj_A와 proj_B가 tuple인 경우 첫 번째 요소 선택
         if isinstance(proj_A, tuple):
@@ -44,30 +45,53 @@ class SimCLR(nn.Module):
         print(f"After view - proj_A shape: {proj_A.shape}, proj_B shape: {proj_B.shape}")
         return proj_A, proj_B
 
-    def compute_loss(self, proj_q, proj_p):
-        return self.nt_xent_loss(proj_q, proj_p)
+    def compute_loss(self, proj_A, proj_B, hard_negatives):
+        # Ensure numerical stability
+        proj_A = torch.clamp(proj_A, min=1e-6, max=1 - 1e-6)
+        proj_B = torch.clamp(proj_B, min=1e-6, max=1 - 1e-6)
 
-    def nt_xent_loss(self, a: torch.Tensor, b: torch.Tensor, tau: float = 0.1) -> torch.Tensor:
-        a_norm = torch.norm(a, dim=1).reshape(-1, 1)
-        b_norm = torch.norm(b, dim=1).reshape(-1, 1)
-        a_cap = torch.div(a, a_norm)
-        b_cap = torch.div(b, b_norm)
+        # NT-Xent Loss 계산
+        logits = torch.mm(proj_A, proj_B.T) / self.temperature
+        labels = torch.arange(proj_A.size(0)).to(proj_A.device)
 
-        sim = torch.mm(a_cap, b_cap.t()) / tau
-        exp_sim = torch.exp(sim)
+        # Numerical stability for softmax
+        logits_max = torch.max(logits, dim=1, keepdim=True).values
+        logits = logits - logits_max.detach()
 
-        # Debugging
-        print(f"[DEBUG] Cosine Similarity mean/std: {sim.mean().item()} / {sim.std().item()}")
-        print(f"[DEBUG] exp_sim mean/std: {exp_sim.mean().item()} / {exp_sim.std().item()}")
+        loss = nn.CrossEntropyLoss()(logits, labels)
+        return loss
 
-        pos_sim = torch.exp(torch.sum(a_cap * b_cap, dim=1) / tau)
-        denominator = exp_sim.sum(dim=1) - pos_sim
+    def nt_xent_loss(self, proj_q, proj_p, hard_negatives):
+        tau = 0.5  # Temperature parameter
 
-        # Debugging
-        print(f"[DEBUG] pos_sim mean/std: {pos_sim.mean().item()} / {pos_sim.std().item()}")
-        print(f"[DEBUG] denominator mean/std: {denominator.mean().item()} / {denominator.std().item()}")
+        print(f"proj_q shape: {proj_q.shape}, hard_negatives shape: {hard_negatives.shape}")
 
-        loss = -torch.log(pos_sim / denominator).mean()
+        # Reshape hard_negatives to 4D for ResNetSE
+        batch_size, num_crops, C, H, W = hard_negatives.size()
+        hard_negatives = hard_negatives.view(-1, C, H, W)  # [batch_size * num_crops, C, H, W]
+
+        # Pass hard_negatives through the encoder
+        hard_negatives = self.encoder(hard_negatives)
+
+        if isinstance(hard_negatives, tuple):
+            hard_negatives = hard_negatives[0]
+
+        hard_negatives = hard_negatives.view(-1, proj_q.size(1))  # [batch_size * num_crops, embedding_dim]
+
+        # Positive similarity
+        positive_sim = torch.exp((proj_q * proj_p).sum(dim=-1) / tau)
+
+        # Negative similarity
+        negative_sim = torch.exp((proj_q @ hard_negatives.T) / tau).sum(dim=-1)
+
+        # Clamp values for numerical stability
+        epsilon = 1e-8
+        positive_sim = torch.clamp(positive_sim, min=epsilon)
+        negative_sim = torch.clamp(negative_sim, min=epsilon)
+
+        # NT-Xent loss calculation
+        loss = -torch.log(positive_sim / (positive_sim + negative_sim)).mean()
+
         return loss
 
 

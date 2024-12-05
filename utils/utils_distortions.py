@@ -4,7 +4,7 @@ from typing import Union, Tuple
 import torch
 from torch.nn import functional as F
 import scipy
-
+import torch.nn as nn
 
 def sign(x: float) -> int:
     return 1 if x >= 0 else -1
@@ -265,36 +265,39 @@ def histc(x: torch.Tensor, binranges: torch.Tensor) -> torch.Tensor:
     return torch.remainder(indices, len(binranges)) - 1
 
 
-def imscatter(x: torch.Tensor, amount: float, iterations=1) -> torch.Tensor:
-    y = x
-    for i in range(iterations):
-        shiftmap = torch.randn((2, x.shape[1], x.shape[2]), device=x.device) * amount
+def imscatter(x: torch.Tensor, amount: float = 0.05, iterations=1) -> torch.Tensor:
+    """
+    Apply scatter distortion to the image.
 
-        sy = shiftmap[0, :, :]
-        sx = shiftmap[1, :, :]
+    Args:
+        x (torch.Tensor): Input image tensor with shape (B, C, H, W) or (C, H, W).
+        amount (float): Scatter intensity.
+        iterations (int): Number of scatter iterations.
 
-        m_sx = torch.ceil(torch.abs(torch.max(sx))).to(torch.int32)
-        m_sy = torch.ceil(torch.abs(torch.max(sy))).to(torch.int32)
+    Returns:
+        torch.Tensor: Scattered image tensor with shape (B, C, H, W) or (C, H, W).
+    """
+    if x.dim() == 4:  # Batched input (B, C, H, W)
+        batch_size, channels, height, width = x.size()
+    elif x.dim() == 3:  # Single image input (C, H, W)
+        batch_size = 1
+        channels, height, width = 1, *x.size()[-2:]
+        x = x.unsqueeze(0)  # Add batch dimension
+    else:
+        raise ValueError(f"Expected 3D or 4D input, got {x.dim()}D tensor.")
 
-        y = F.pad(y, (m_sy, m_sy), mode='replicate')
-        y = F.pad(y.transpose(2, 1), (m_sx, m_sx), mode='replicate').transpose(2, 1)
+    device = x.device
+    y = x.clone()
 
-        sy = F.pad(sy, (m_sy, m_sy), mode='replicate')
-        sy = F.pad(sy.transpose(1, 0), (m_sx, m_sx), mode='replicate').transpose(1, 0)
-        sx = F.pad(sx, (m_sy, m_sy), mode='replicate')
-        sx = F.pad(sx.transpose(1, 0), (m_sx, m_sx), mode='replicate').transpose(1, 0)
+    for _ in range(iterations):
+        shift_map_y = torch.randn((batch_size, 1, height, width), device=device) * amount
+        shift_map_x = torch.randn((batch_size, 1, height, width), device=device) * amount
 
-        xx, yy = torch.as_tensor(np.mgrid[0:y.shape[1], 0:y.shape[2]], device=x.device)
+        # Pass all required arguments to generate_scatter_grid
+        grid = generate_scatter_grid(batch_size, height, width, shift_map_y, shift_map_x, device)
+        y = F.grid_sample(y, grid, mode='bilinear', padding_mode='reflection', align_corners=False)
 
-        z = torch.zeros_like(y)
-        bx = (xx - sx)
-        by = (yy - sy)
-        for i in range(3):
-            j = bilinear_interpolate_torch(y[i, ...], by, bx)
-            z[i, :, :] = j
-
-        y = z[:, m_sy:m_sy + x.shape[1], m_sx:m_sx + x.shape[2]]
-    return y
+    return y.squeeze(0) if batch_size == 1 else y
 
 
 def bilinear_interpolate_torch(im: torch.Tensor, x: torch.Tensor, y: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
@@ -322,5 +325,185 @@ def bilinear_interpolate_torch(im: torch.Tensor, x: torch.Tensor, y: torch.Tenso
     return P
 
 
+def apply_random_distortions(img: torch.Tensor, max_distortions: int = 4) -> torch.Tensor:
+    """
+    Apply a sequence of random distortions to the given image or batch of images.
+    
+    Args:
+        img (torch.Tensor): Input image tensor with shape (B, num_crops, C, H, W) or (B, C, H, W).
+        max_distortions (int): Maximum number of distortions to apply.
+    
+    Returns:
+        torch.Tensor: Distorted image tensor with the same shape as input.
+    """
+    if img.dim() == 5:  # [B, num_crops, C, H, W]
+        batch_size, num_crops, channels, height, width = img.size()
+        img = img.view(-1, channels, height, width)  # Flatten to [B * num_crops, C, H, W]
+    elif img.dim() == 4:  # [B, C, H, W]
+        batch_size, channels, height, width = img.size()
+    else:
+        raise ValueError(f"Unsupported input dimension: {img.dim()}")
 
-""" 왜곡 적용하는 코드 """
+    # Apply distortions to each image in the batch
+    distorted_imgs = []
+    for single_img in img:
+        num_distortions = np.random.randint(1, max_distortions + 1)
+        for _ in range(num_distortions):
+            distortion = np.random.choice([imscatter, add_gaussian_noise, apply_motion_blur])
+            single_img = distortion(single_img)
+        distorted_imgs.append(single_img)
+
+    distorted_imgs = torch.stack(distorted_imgs)
+
+    if img.dim() == 5:  # Reshape back to original shape
+        distorted_imgs = distorted_imgs.view(batch_size, num_crops, channels, height, width)
+    
+    return distorted_imgs
+
+
+
+def generate_hard_negatives(img, scale_factor=0.5):
+    """
+    Generate hard negatives by downscaling the input image.
+
+    Args:
+        img (torch.Tensor): Input image tensor of shape [batch_size, num_crops, C, H, W].
+        scale_factor (float): Scaling factor for downscaling.
+
+    Returns:
+        torch.Tensor: Downscaled image tensor of shape [batch_size, num_crops, C, new_H, new_W].
+    """
+    batch_size, num_crops, C, H, W = img.size()
+    new_H, new_W = int(H * scale_factor), int(W * scale_factor)
+
+    # View 전에 contiguous() 호출
+    img = img.contiguous().view(-1, C, H, W)  # Flatten (batch_size * num_crops, C, H, W)
+
+    # Resize images
+    downscaled_imgs = nn.functional.interpolate(img, size=(new_H, new_W), mode='bilinear', align_corners=False)
+
+    # Reshape back to original dimensions
+    downscaled_imgs = downscaled_imgs.view(batch_size, num_crops, C, new_H, new_W)
+
+    return downscaled_imgs
+
+
+
+
+def imscatter(img: torch.Tensor, amount: float = 0.05, iterations: int = 1) -> torch.Tensor:
+    """
+    Apply scatter distortion to the image.
+    """
+    if img.dim() == 3:  # 3D 입력일 경우 (C, H, W)
+        img = img.unsqueeze(0)  # 배치 차원 추가
+    if img.dim() != 4:  # 4D 텐서가 아닌 경우 오류 처리
+        raise ValueError(f"Expected 4D input (B, C, H, W), but got {img.dim()}D tensor.")
+
+    device = img.device
+    batch_size, _, height, width = img.size()
+    y = img.clone()
+
+    for _ in range(iterations):
+        sy = torch.randn((batch_size, 1, height, width), device=device) * amount
+        sx = torch.randn((batch_size, 1, height, width), device=device) * amount
+        grid = generate_scatter_grid(batch_size, height, width, sy, sx, device)
+        y = F.grid_sample(y, grid, mode='bilinear', padding_mode='reflection', align_corners=False)
+
+    return y.squeeze(0) if y.size(0) == 1 else y
+
+
+def add_gaussian_noise(img: torch.Tensor, std: float = 0.1) -> torch.Tensor:
+    """
+    Add Gaussian noise to the image.
+    
+    Args:
+        img (torch.Tensor): Input image tensor with shape (C, H, W).
+        std (float): Standard deviation of the noise.
+    
+    Returns:
+        torch.Tensor: Noisy image tensor with shape (C, H, W).
+    """
+    noise = torch.randn_like(img) * std
+    return torch.clamp(img + noise, 0, 1)
+
+
+def apply_motion_blur(img: torch.Tensor, kernel_size: int = 5, angle: float = 45.0) -> torch.Tensor:
+    """
+    Apply motion blur to the image using a predefined kernel.
+
+    Args:
+        img (torch.Tensor): Input image tensor of shape (B, C, H, W) or (B, num_crops, C, H, W).
+        kernel_size (int): Size of the motion blur kernel.
+        angle (float): Angle of motion blur in degrees.
+
+    Returns:
+        torch.Tensor: Blurred image tensor with the same shape as input.
+    """
+    if img.dim() == 4:  # 4D input: [B, C, H, W]
+        batch_size, channels, height, width = img.size()
+    elif img.dim() == 3:  # 3D input: [C, H, W]
+        batch_size = 1
+        channels, height, width = img.shape
+        img = img.unsqueeze(0)  # Add batch dimension
+    else:
+        raise ValueError(f"Expected 3D or 4D input, got {img.dim()}D tensor.")
+
+    # Create motion blur kernel
+    kernel = create_motion_blur_kernel(kernel_size, angle)
+    kernel = torch.from_numpy(kernel).float().to(img.device)
+    kernel = kernel.expand(channels, 1, kernel_size, kernel_size)  # Match kernel to number of channels
+
+    # Apply motion blur
+    blurred = F.conv2d(img, kernel, padding=kernel_size // 2, groups=channels)
+
+    if batch_size == 1:
+        blurred = blurred.squeeze(0)  # Remove batch dimension if added
+
+    return blurred
+
+
+def create_motion_blur_kernel(kernel_size: int, angle: float) -> np.ndarray:
+    """
+    Create a motion blur kernel.
+    
+    Args:
+        kernel_size (int): Size of the kernel.
+        angle (float): Angle of the motion blur in degrees.
+    
+    Returns:
+        np.ndarray: Motion blur kernel.
+    """
+    kernel = np.zeros((kernel_size, kernel_size))
+    mid = kernel_size // 2
+    for i in range(kernel_size):
+        offset = round(mid - i * math.tan(math.radians(angle)))
+        if 0 <= mid + offset < kernel_size:
+            kernel[i, mid + offset] = 1
+    return kernel / kernel.sum()
+
+
+def generate_scatter_grid(batch_size: int, height: int, width: int, sy: torch.Tensor, sx: torch.Tensor, device: torch.device) -> torch.Tensor:
+    """
+    Generate scatter grid for imscatter.
+
+    Args:
+        batch_size (int): Batch size of the input images.
+        height (int): Height of the input images.
+        width (int): Width of the input images.
+        sy (torch.Tensor): Scatter map for y-axis.
+        sx (torch.Tensor): Scatter map for x-axis.
+        device (torch.device): Device to generate the grid.
+
+    Returns:
+        torch.Tensor: Grid tensor of shape (B, H, W, 2).
+    """
+    xx, yy = torch.meshgrid(
+        torch.arange(0, width, device=device, dtype=torch.float32),
+        torch.arange(0, height, device=device, dtype=torch.float32),
+        indexing="xy"
+    )
+    xx = xx.unsqueeze(0).expand(batch_size, -1, -1)
+    yy = yy.unsqueeze(0).expand(batch_size, -1, -1)
+
+    grid = torch.stack((xx + sx.squeeze(1), yy + sy.squeeze(1)), dim=-1)
+    return grid
