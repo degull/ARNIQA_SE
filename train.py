@@ -3,6 +3,7 @@
 ## 양성 쌍 훈련에서는 proj_A와 proj_B가 서로 같은 이미지를 나타내니까, 모델은 두 벡터의 거리가 가까워지도록 학습해야 함
 
 # kadid ver1 (ridge regressor)
+""" 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
@@ -25,9 +26,7 @@ def save_checkpoint(model: nn.Module, checkpoint_path: Path, epoch: int, srocc: 
 
 
 def calculate_srcc_plcc(proj_A, proj_B):
-    """
-    SRCC와 PLCC를 배치 단위로 계산하여 메모리 문제 해결.
-    """
+
     proj_A = proj_A.detach().cpu().numpy()
     proj_B = proj_B.detach().cpu().numpy()
 
@@ -301,10 +300,418 @@ if __name__ == "__main__":
 
     plot_results(mos_scores, predictions)
 
+ """
 
-# kadid ver2
+# # kadid ver1 (ridge regressor + 검증)
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, random_split
+import numpy as np
+from dotmap import DotMap
+from pathlib import Path
+from scipy import stats
+from tqdm import tqdm
+from sklearn.linear_model import Ridge
+from data import KADID10KDataset
+from models.simclr import SimCLR
+from utils.utils_distortions import apply_random_distortions, generate_hard_negatives
+import matplotlib.pyplot as plt
+import random
+def save_checkpoint(model: nn.Module, checkpoint_path: Path, epoch: int, srocc: float) -> None:
+    filename = f"epoch_{epoch}_srocc_{srocc:.3f}.pth"
+    torch.save(model.state_dict(), checkpoint_path / filename)
 
-# kadid ver2 ->
+def verify_positive_pairs(distortions_A, distortions_B):
+    """
+    양성쌍이 동일한 왜곡이 적용되었는지 확인합니다.
+    """
+    if distortions_A == distortions_B:
+        print("[Positive Pair Verification] Success: Distortions match.")
+    else:
+        print("[Positive Pair Verification] Error: Distortions do not match.")
+        print(f"distortions_A: {distortions_A}, distortions_B: {distortions_B}")
+
+def verify_hard_negatives(original_shape, downscaled_shape):
+    """
+    경음성쌍이 정확히 50%로 다운스케일 되었는지 확인합니다.
+    """
+    expected_shape = (original_shape[-2] // 2, original_shape[-1] // 2)
+    if downscaled_shape[-2:] == expected_shape:
+        print("[Hard Negative Verification] Success: Hard negatives are correctly downscaled.")
+    else:
+        print("[Hard Negative Verification] Error: Hard negatives are not correctly downscaled.")
+        print(f"Expected: {expected_shape}, Got: {downscaled_shape[-2:]}")
+
+def calculate_srcc_plcc(proj_A, proj_B):
+    proj_A = proj_A.detach().cpu().numpy()
+    proj_B = proj_B.detach().cpu().numpy()
+
+    srocc_list = []
+    plcc_list = []
+    for i in range(proj_A.shape[0]):
+        srocc, _ = stats.spearmanr(proj_A[i], proj_B[i])
+        plcc, _ = stats.pearsonr(proj_A[i], proj_B[i])
+        srocc_list.append(srocc)
+        plcc_list.append(plcc)
+
+    avg_srocc = np.mean(srocc_list)
+    avg_plcc = np.mean(plcc_list)
+    return avg_srocc, avg_plcc
+
+
+def validate(args: DotMap, model: nn.Module, val_dataloader: DataLoader, device: torch.device):
+    model.eval()
+    srocc_list, plcc_list = [], []
+
+    with torch.no_grad():
+        for batch in val_dataloader:
+            inputs_A = batch["img_A"].to(device)
+            inputs_B = batch["img_B"].to(device)
+
+            # 입력 데이터가 5차원([batch_size, C, H, W])인 경우에만 unsqueeze 호출
+            if inputs_A.dim() == 4:
+                inputs_A = inputs_A.unsqueeze(1)  # Add num_crops dimension
+            if inputs_B.dim() == 4:
+                inputs_B = inputs_B.unsqueeze(1)  # Add num_crops dimension
+
+            # num_crops 차원을 2로 확장
+            inputs_A = inputs_A.expand(-1, 2, -1, -1, -1)
+            inputs_B = inputs_B.expand(-1, 2, -1, -1, -1)
+
+            proj_A, proj_B = model(inputs_A, inputs_B)
+            srocc, plcc = calculate_srcc_plcc(proj_A, proj_B)
+
+            srocc_list.append(srocc)
+            plcc_list.append(plcc)
+
+    avg_srocc = np.mean(srocc_list) if srocc_list else 0
+    avg_plcc = np.mean(plcc_list) if plcc_list else 0
+    return avg_srocc, avg_plcc
+
+def train(args: DotMap,
+          model: nn.Module,
+          train_dataloader: DataLoader,
+          val_dataloader: DataLoader,
+          optimizer: torch.optim.Optimizer,
+          lr_scheduler: torch.optim.lr_scheduler.StepLR,
+          scaler: torch.cuda.amp.GradScaler,
+          device: torch.device) -> None:
+    checkpoint_path = Path(args.checkpoint_path)
+    checkpoint_path.mkdir(parents=True, exist_ok=True)
+
+    best_srocc = 0
+    for epoch in range(args.training.epochs):
+        model.train()
+        running_loss = 0.0
+        progress_bar = tqdm(train_dataloader, desc=f"Epoch [{epoch + 1}/{args.training.epochs}]")
+
+        for i, batch in enumerate(progress_bar):
+            inputs_A = batch["img_A"].to(device)
+            inputs_B = batch["img_B"].to(device)
+
+            # 동일한 왜곡을 적용하도록 shared_distortion 설정
+            shared_distortion = random.choice(["blur", "noise", "color_shift", "jpeg_compression"])
+            inputs_A, distortions_A = apply_random_distortions(inputs_A, shared_distortion=shared_distortion, return_info=True)
+            inputs_B, distortions_B = apply_random_distortions(inputs_B, shared_distortion=shared_distortion, return_info=True)
+
+            # 양성 쌍 검증
+            if distortions_A == distortions_B:
+                print("[Positive Pair Verification] Success: Distortions match.")
+            else:
+                print(f"[Positive Pair Verification] Error: Distortions do not match.\n"
+                      f"distortions_A: {distortions_A}, distortions_B: {distortions_B}")
+
+            # 입력 데이터가 5차원([batch_size, C, H, W])인 경우에만 unsqueeze 호출
+            if inputs_A.dim() == 4:
+                inputs_A = inputs_A.unsqueeze(1)
+            if inputs_B.dim() == 4:
+                inputs_B = inputs_B.unsqueeze(1)
+
+            # num_crops 차원을 2로 확장
+            inputs_A = inputs_A.expand(-1, 2, -1, -1, -1)
+            inputs_B = inputs_B.expand(-1, 2, -1, -1, -1)
+
+            # 경음성 쌍 생성 및 검증
+            hard_negatives = generate_hard_negatives(inputs_B, scale_factor=0.5)
+            if inputs_B.shape[0] == hard_negatives.shape[0]:
+                print("[Hard Negative Verification] Success: Hard negatives are correctly downscaled.")
+            else:
+                print(f"[Hard Negative Verification] Error: Shape mismatch.\n"
+                      f"inputs_B shape: {inputs_B.shape}, hard_negatives shape: {hard_negatives.shape}")
+
+            optimizer.zero_grad()
+            with torch.cuda.amp.autocast():
+                proj_A, proj_B = model(inputs_A, inputs_B)
+                loss = model.compute_loss(proj_A, proj_B, hard_negatives)
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+
+            running_loss += loss.item()
+            progress_bar.set_postfix(loss=running_loss / (i + 1))
+
+        lr_scheduler.step()
+        avg_srocc_val, avg_plcc_val = validate(args, model, val_dataloader, device)
+        print(f"Epoch [{epoch + 1}] Validation Results: SRCC = {avg_srocc_val:.4f}, PLCC = {avg_plcc_val:.4f}")
+
+        if avg_srocc_val > best_srocc:
+            best_srocc = avg_srocc_val
+            save_checkpoint(model, checkpoint_path, epoch, best_srocc)
+
+    print("Finished training")
+
+
+
+def train_ridge_regressor(model: nn.Module, train_dataloader: DataLoader, device: torch.device):
+    model.eval()
+    embeddings, mos_scores = [], []
+
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(train_dataloader):
+            inputs_A = batch["img_A"].to(device)
+            mos = batch["mos"]
+
+            if inputs_A.dim() == 4:
+                inputs_A = inputs_A.unsqueeze(1)
+
+            proj_A, _ = model(inputs_A, inputs_A)
+            embeddings.append(proj_A.cpu().numpy())
+            mos_scores.append(mos.numpy())
+
+    embeddings = np.vstack(embeddings)
+    mos_scores = np.hstack(mos_scores)
+    regressor = Ridge(alpha=1.0)
+    regressor.fit(embeddings, mos_scores)
+    return regressor
+
+def evaluate_ridge_regressor(regressor, model: nn.Module, val_dataloader: DataLoader, device: torch.device):
+    model.eval()
+    mos_scores, predictions = [], []
+
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(val_dataloader):
+            inputs_A = batch["img_A"].to(device)
+            mos = batch["mos"]
+
+            if inputs_A.dim() == 4:
+                inputs_A = inputs_A.unsqueeze(1)
+                inputs_A = inputs_A.expand(-1, 2, -1, -1, -1)
+
+            proj_A, _ = model(inputs_A, inputs_A)
+            predictions.append(regressor.predict(proj_A.cpu().numpy()))
+            mos_scores.append(mos.numpy())
+
+    mos_scores = np.hstack(mos_scores)
+    predictions = np.hstack(predictions)
+    return mos_scores, predictions
+
+def plot_results(mos_scores, predictions):
+    plt.figure(figsize=(8, 6))
+    plt.scatter(mos_scores, predictions, alpha=0.7, label='Predictions vs MOS')
+    plt.plot([min(mos_scores), max(mos_scores)], [min(mos_scores), max(mos_scores)], 'r--', label='Ideal')
+    plt.xlabel('Ground Truth MOS')
+    plt.ylabel('Predicted MOS')
+    plt.title('Ridge Regressor Performance')
+    plt.legend()
+    plt.grid()
+    plt.show()
+
+if __name__ == "__main__":
+    args = DotMap({
+        "data_base_path": "E:/ARNIQA/dataset",
+        "training": {"epochs": 10, "batch_size": 16, "learning_rate": 1e-3, "num_workers": 4},
+        "checkpoint_path": "E:/ARNIQA/experiments/my_experiment/pretrain",
+        "model": {"temperature": 0.1, "embedding_dim": 128}
+    })
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    dataset = KADID10KDataset("E:/ARNIQA - SE/ARNIQA/dataset/KADID10K/kadid10k.csv")
+    train_size = int(0.7 * len(dataset))
+    val_size = int(0.1 * len(dataset))
+    test_size = len(dataset) - train_size - val_size
+    train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size])
+
+    train_dataloader = DataLoader(train_dataset, batch_size=args.training.batch_size, shuffle=True, num_workers=args.training.num_workers)
+    val_dataloader = DataLoader(val_dataset, batch_size=args.training.batch_size, shuffle=False, num_workers=args.training.num_workers)
+
+    model = SimCLR(encoder_params=DotMap({"embedding_dim": args.model.embedding_dim}), temperature=args.model.temperature).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.training.learning_rate)
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
+    scaler = torch.cuda.amp.GradScaler()
+
+    train(args, model, train_dataloader, val_dataloader, optimizer, lr_scheduler, scaler, device)
+
+    regressor = train_ridge_regressor(model, train_dataloader, device)
+    mos_scores, predictions = evaluate_ridge_regressor(regressor, model, val_dataloader, device)
+    plot_results(mos_scores, predictions)
+
+
+
+
+# kadid ver2 (ridge regressor + 검증)
+""" 
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, random_split
+import numpy as np
+from dotmap import DotMap
+from pathlib import Path
+from scipy import stats
+from tqdm import tqdm
+from sklearn.linear_model import Ridge
+from data import KADID10KDataset
+from models.simclr import SimCLR
+from utils.utils_distortions import apply_random_distortions, generate_hard_negatives
+from torch.cuda.amp import custom_fwd
+import matplotlib.pyplot as plt
+
+
+def save_checkpoint(model: nn.Module, checkpoint_path: Path, epoch: int, srocc: float) -> None:
+    filename = f"epoch_{epoch}_srocc_{srocc:.3f}.pth"
+    torch.save(model.state_dict(), checkpoint_path / filename)
+
+
+def verify_positive_pairs(inputs_A, inputs_B, distortions_A, distortions_B):
+    if distortions_A != distortions_B:
+        print("[Positive Pair Verification] Error: Distortions do not match.")
+        print(f"distortions_A: {distortions_A}, distortions_B: {distortions_B}")
+    else:
+        print("[Positive Pair Verification] Success: Distortions match.")
+
+
+def verify_hard_negatives(inputs_B, hard_negatives):
+    original_shape = inputs_B.shape[-2:]  # H, W
+    hard_negative_shape = hard_negatives.shape[-2:]
+    expected_shape = (original_shape[0] // 2, original_shape[1] // 2)
+    if hard_negative_shape != expected_shape:
+        print(f"[Hard Negative Verification] Error: Expected {expected_shape}, but got {hard_negative_shape}.")
+    else:
+        print("[Hard Negative Verification] Success: Hard negatives are correctly downscaled.")
+
+
+def calculate_srcc_plcc(proj_A, proj_B):
+    proj_A = proj_A.detach().cpu().numpy()
+    proj_B = proj_B.detach().cpu().numpy()
+    srocc, _ = stats.spearmanr(proj_A.flatten(), proj_B.flatten())
+    plcc, _ = stats.pearsonr(proj_A.flatten(), proj_B.flatten())
+    return srocc, plcc
+
+
+def validate(args, model, val_dataloader, device):
+    model.eval()
+    srocc_list, plcc_list = [], []
+
+    with torch.no_grad():
+        for batch in val_dataloader:
+            inputs_A = batch["img_A"].to(device)
+            inputs_B = batch["img_B"].to(device)
+
+            if inputs_A.dim() == 4:
+                inputs_A = inputs_A.unsqueeze(1)
+            if inputs_B.dim() == 4:
+                inputs_B = inputs_B.unsqueeze(1)
+
+            inputs_A = inputs_A.expand(-1, 2, -1, -1, -1)
+            inputs_B = inputs_B.expand(-1, 2, -1, -1, -1)
+
+            proj_A, proj_B = model(inputs_A, inputs_B)
+            srocc, plcc = calculate_srcc_plcc(proj_A, proj_B)
+
+            srocc_list.append(srocc)
+            plcc_list.append(plcc)
+
+    return np.mean(srocc_list), np.mean(plcc_list)
+
+
+def train(args, model, train_dataloader, val_dataloader, optimizer, lr_scheduler, scaler, device):
+    checkpoint_path = Path(args.checkpoint_path)
+    checkpoint_path.mkdir(parents=True, exist_ok=True)
+
+    best_srocc = 0
+    for epoch in range(args.training.epochs):
+        model.train()
+        running_loss = 0.0
+        progress_bar = tqdm(train_dataloader, desc=f"Epoch [{epoch + 1}/{args.training.epochs}]")
+
+        for i, batch in enumerate(progress_bar):
+            inputs_A = batch["img_A"].to(device)
+            inputs_B = batch["img_B"].to(device)
+
+            # 동일한 왜곡 적용
+            shared_distortion = torch.randint(0, 4, (1,)).item()  # 동일한 왜곡 생성
+            inputs_A, distortions_A = apply_random_distortions(inputs_A, shared_distortion=shared_distortion, return_info=True)
+            inputs_B, distortions_B = apply_random_distortions(inputs_B, shared_distortion=shared_distortion, return_info=True)
+
+            # 양성 쌍 검증
+            verify_positive_pairs(inputs_A, inputs_B, distortions_A, distortions_B)
+
+            if inputs_A.dim() == 4:
+                inputs_A = inputs_A.unsqueeze(1)
+            if inputs_B.dim() == 4:
+                inputs_B = inputs_B.unsqueeze(1)
+
+            inputs_A = inputs_A.expand(-1, 2, -1, -1, -1)
+            inputs_B = inputs_B.expand(-1, 2, -1, -1, -1)
+
+            # 경음성 쌍 생성 및 검증
+            hard_negatives = generate_hard_negatives(inputs_B, scale_factor=0.5)
+            verify_hard_negatives(inputs_B, hard_negatives)
+
+            optimizer.zero_grad()
+            with torch.cuda.amp.autocast():
+                proj_A, proj_B = model(inputs_A, inputs_B)
+                loss = model.compute_loss(proj_A, proj_B, hard_negatives)
+                print(f"[Loss Debug] Loss: {loss.item()}")
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+
+            running_loss += loss.item()
+            progress_bar.set_postfix(loss=running_loss / (i + 1))
+
+        lr_scheduler.step()
+        avg_srocc, avg_plcc = validate(args, model, val_dataloader, device)
+        print(f"Validation SRCC: {avg_srocc}, PLCC: {avg_plcc}")
+
+        if avg_srocc > best_srocc:
+            best_srocc = avg_srocc
+            save_checkpoint(model, checkpoint_path, epoch, best_srocc)
+
+    print("Training Complete.")
+
+
+if __name__ == "__main__":
+    args = DotMap({
+        "training": {"epochs": 10, "batch_size": 16, "learning_rate": 1e-3, "num_workers": 4},
+        "checkpoint_path": "E:/ARNIQA/experiments/my_experiment/pretrain",
+        "model": {"temperature": 0.1, "embedding_dim": 128}
+    })
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    dataset = KADID10KDataset("E:/ARNIQA - SE/ARNIQA/dataset/KADID10K/kadid10k.csv")
+    train_size, val_size = int(0.7 * len(dataset)), int(0.1 * len(dataset))
+    test_size = len(dataset) - train_size - val_size
+    train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size])
+
+    train_dataloader = DataLoader(train_dataset, batch_size=args.training.batch_size, shuffle=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=args.training.batch_size, shuffle=False)
+
+    model = SimCLR(
+        encoder_params=DotMap({"embedding_dim": args.model.embedding_dim}),
+        temperature=args.model.temperature
+    ).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.training.learning_rate)
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
+    scaler = torch.cuda.amp.GradScaler()
+
+    train(args, model, train_dataloader, val_dataloader, optimizer, lr_scheduler, scaler, device)
+
+ """
+
+# ------------------------------------
 """ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split

@@ -325,40 +325,42 @@ def bilinear_interpolate_torch(im: torch.Tensor, x: torch.Tensor, y: torch.Tenso
     return P
 
 
-def apply_random_distortions(img: torch.Tensor, max_distortions: int = 4) -> torch.Tensor:
+import random
+
+def apply_random_distortions(images, shared_distortion=None, return_info=False):
     """
-    Apply a sequence of random distortions to the given image or batch of images.
+    주어진 이미지에 랜덤 왜곡을 적용합니다.
     
     Args:
-        img (torch.Tensor): Input image tensor with shape (B, num_crops, C, H, W) or (B, C, H, W).
-        max_distortions (int): Maximum number of distortions to apply.
+        images (torch.Tensor): 입력 이미지 텐서 [batch_size, C, H, W].
+        shared_distortion (str, optional): 동일한 왜곡을 적용할 경우 지정.
+        return_info (bool): 적용된 왜곡 정보를 반환할지 여부.
     
     Returns:
-        torch.Tensor: Distorted image tensor with the same shape as input.
+        torch.Tensor: 왜곡된 이미지.
+        list (optional): 적용된 왜곡의 목록 (return_info가 True일 경우).
     """
-    if img.dim() == 5:  # [B, num_crops, C, H, W]
-        batch_size, num_crops, channels, height, width = img.size()
-        img = img.view(-1, channels, height, width)  # Flatten to [B * num_crops, C, H, W]
-    elif img.dim() == 4:  # [B, C, H, W]
-        batch_size, channels, height, width = img.size()
-    else:
-        raise ValueError(f"Unsupported input dimension: {img.dim()}")
+    distortions = ["blur", "noise", "color_shift", "jpeg_compression"]
+    applied_distortions = []
 
-    # Apply distortions to each image in the batch
-    distorted_imgs = []
-    for single_img in img:
-        num_distortions = np.random.randint(1, max_distortions + 1)
-        for _ in range(num_distortions):
-            distortion = np.random.choice([imscatter, add_gaussian_noise, apply_motion_blur])
-            single_img = distortion(single_img)
-        distorted_imgs.append(single_img)
+    for i in range(images.size(0)):  # 배치 크기만큼 반복
+        distortion = shared_distortion if shared_distortion else random.choice(distortions)
+        applied_distortions.append(distortion)
 
-    distorted_imgs = torch.stack(distorted_imgs)
+        if distortion == "blur":
+            images[i] = images[i].unsqueeze(0).float()  # Blur 적용 코드 추가
+        elif distortion == "noise":
+            images[i] += torch.randn_like(images[i]) * 0.1  # Noise 추가
+        elif distortion == "color_shift":
+            images[i] = images[i] * random.uniform(0.8, 1.2)  # 색 변화 추가
+        elif distortion == "jpeg_compression":
+            # JPEG 압축 왜곡 적용 코드
+            pass
 
-    if img.dim() == 5:  # Reshape back to original shape
-        distorted_imgs = distorted_imgs.view(batch_size, num_crops, channels, height, width)
-    
-    return distorted_imgs
+    if return_info:
+        return images, applied_distortions
+    return images
+
 
 
 
