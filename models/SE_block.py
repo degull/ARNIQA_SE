@@ -62,29 +62,34 @@ class Bottleneck(nn.Module):
         out += identity
         out = self.relu(out)
         return out
+    
+    
 class ResNetSE(nn.Module):
     def __init__(self, embedding_dim: int, pretrained: bool = True, use_norm: bool = True):
         super(ResNetSE, self).__init__()
         self.pretrained = pretrained
         self.use_norm = use_norm
         self.embedding_dim = embedding_dim
-        # Load ResNet50 weights if pretrained
         weights = torchvision.models.ResNet50_Weights.IMAGENET1K_V1 if self.pretrained else None
         self.model = resnet50(weights=weights)
-        # Set the inplanes attribute to match ResNet's expectations for each layer
-        self.model.inplanes = 64  # Initial input channels of ResNet
+        
         # Replace Bottleneck blocks with SE-enabled Bottleneck
         self.model.layer1 = self._make_layer(Bottleneck, 64, 3)
         self.model.layer2 = self._make_layer(Bottleneck, 128, 4, stride=2)
         self.model.layer3 = self._make_layer(Bottleneck, 256, 6, stride=2)
         self.model.layer4 = self._make_layer(Bottleneck, 512, 3, stride=2)
+        
+        # Set the correct feature dimension for the final output of ResNet
         self.feat_dim = self.model.fc.in_features
         self.model = nn.Sequential(*list(self.model.children())[:-1])  # Remove fully connected layer
+
+        # Create a projector for embedding
         self.projector = nn.Sequential(
             nn.Linear(self.feat_dim, self.feat_dim),
             nn.ReLU(),
             nn.Linear(self.feat_dim, self.embedding_dim)
         )
+
     def _make_layer(self, block, planes, blocks, stride=1):
         downsample = None
         if stride != 1 or self.model.inplanes != planes * block.expansion:
@@ -98,10 +103,11 @@ class ResNetSE(nn.Module):
         for _ in range(1, blocks):
             layers.append(block(self.model.inplanes, planes))
         return nn.Sequential(*layers)
+
     def forward(self, x):
         print(f"ResNetSE input shape: {x.shape}")
         f = self.model(x)
-        f = f.view(-1, self.feat_dim)
+        f = f.view(-1, self.feat_dim)  # Flatten the output for embedding
         print(f"Feature shape after ResNet model: {f.shape}")
         if self.use_norm:
             f = F.normalize(f, dim=1)
@@ -112,13 +118,7 @@ class ResNetSE(nn.Module):
             return f, F.normalize(g, dim=1)
         else:
             return f, g
-if __name__ == "__main__":
-    # Instantiate the model with specific embedding dimensions
-    model = ResNetSE(embedding_dim=128)
-    # Test data
-    img = torch.randn(4, 3, 224, 224)  # [batch_size, channels, H, W]
-    output = model(img)
-    print("Final output:", output)
+
 
 
 

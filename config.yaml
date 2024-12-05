@@ -2,7 +2,7 @@
 experiment_name: "ARNIQA_Experiment"
 device: 0
 seed: 27
-data_base_path: "E:/ARNIQA/ARNIQA/dataset"
+data_base_path: "E:/ARNIQA - SE/ARNIQA/dataset/KADID10K"
 checkpoint_base_path: "E:/ARNIQA/ARNIQA/checkpoints"
 checkpoint_frequency: 1
 
