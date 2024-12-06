@@ -1147,7 +1147,6 @@ def plot_results(mos_scores, predictions):
     
 
 if __name__ == "__main__":
-
     # Config 경로 설정
     config_path = "E:/ARNIQA - SE/ARNIQA/config.yaml"
     config = load_config(config_path)
@@ -1161,14 +1160,39 @@ if __name__ == "__main__":
     test_size = len(dataset) - train_size - val_size
     train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size])
 
-    train_dataloader = DataLoader(train_dataset, batch_size=config.training.batch_size, shuffle=True, num_workers=min(config.training.num_workers, 16))
-    val_dataloader = DataLoader(val_dataset, batch_size=config.training.batch_size, shuffle=False, num_workers=min(config.training.num_workers, 16))
-    test_dataloader = DataLoader(test_dataset, batch_size=config.training.batch_size, shuffle=False, num_workers=min(config.training.num_workers, 16))
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=config.training.batch_size,
+        shuffle=True,
+        num_workers=min(config.training.num_workers, 16),
+    )
+    val_dataloader = DataLoader(
+        val_dataset,
+        batch_size=config.training.batch_size,
+        shuffle=False,
+        num_workers=min(config.training.num_workers, 16),
+    )
+    test_dataloader = DataLoader(
+        test_dataset,
+        batch_size=config.training.batch_size,
+        shuffle=False,
+        num_workers=min(config.training.num_workers, 16),
+    )
 
     # 모델, 옵티마이저, 스케줄러 초기화
     model = SimCLR(encoder_params=DotMap(config.model.encoder), temperature=config.model.temperature).to(device)
-    optimizer = torch.optim.SGD(model.parameters(), lr=config.training.learning_rate, momentum=config.training.optimizer.momentum, weight_decay=config.training.optimizer.weight_decay)
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=config.training.lr_scheduler.T_0, T_mult=config.training.lr_scheduler.T_mult, eta_min=config.training.lr_scheduler.eta_min)
+    optimizer = torch.optim.SGD(
+        model.parameters(),
+        lr=config.training.learning_rate,
+        momentum=config.training.optimizer.momentum,
+        weight_decay=config.training.optimizer.weight_decay,
+    )
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer,
+        T_0=config.training.lr_scheduler.T_0,
+        T_mult=config.training.lr_scheduler.T_mult,
+        eta_min=config.training.lr_scheduler.eta_min,
+    )
     scaler = torch.amp.GradScaler()
 
     # 모델 학습
@@ -1177,20 +1201,27 @@ if __name__ == "__main__":
     # Ridge Regressor 학습 (Train 데이터 사용)
     regressor = train_ridge_regressor(model, train_dataloader, device)
 
-    # Test 데이터에서 Ridge Regressor 평가
-    mos_scores, predictions = evaluate_ridge_regressor(regressor, model, test_dataloader, device)
+    # Validation 데이터에서 Ridge Regressor 평가
+    val_mos_scores, val_predictions = evaluate_ridge_regressor(regressor, model, val_dataloader, device)
+    val_srcc, _ = stats.spearmanr(val_mos_scores, val_predictions)
+    val_plcc, _ = stats.pearsonr(val_mos_scores, val_predictions)
 
-    # SRCC 및 PLCC 계산
-    srcc, _ = stats.spearmanr(mos_scores, predictions)
-    plcc, _ = stats.pearsonr(mos_scores, predictions)
+    # Test 데이터에서 Ridge Regressor 평가
+    test_mos_scores, test_predictions = evaluate_ridge_regressor(regressor, model, test_dataloader, device)
+    test_srcc, _ = stats.spearmanr(test_mos_scores, test_predictions)
+    test_plcc, _ = stats.pearsonr(test_mos_scores, test_predictions)
 
     # 최종 결과 출력
-    print(f"Final Test Results: SRCC = {srcc:.4f}, PLCC = {plcc:.4f}")
+    print(f"\nFinal Validation Results: SRCC = {val_srcc:.4f}, PLCC = {val_plcc:.4f}")
+    print(f"Final Test Results: SRCC = {test_srcc:.4f}, PLCC = {test_plcc:.4f}")
 
-    # 그래프 출력
-    plot_results(mos_scores, predictions)
+    # 그래프 출력 (Test 결과)
+    plot_results(test_mos_scores, test_predictions)
 
 
+# Final embeddings shape: (9974, 2048)
+# Final MOS scores shape: (9974,)
+# Optimal alpha: 0.01
 
 
 # kadid ver4 (regressor -> random forest)
