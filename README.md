@@ -59,4 +59,23 @@ This work was partially supported by the European Commission under European Hori
 ---
 
 
+### Results ver1
+ARNIQA + SE(Squeeze-and-Excitation) & Ridge Regressor
+![image](https://github.com/user-attachments/assets/a40ad223-3759-4891-a0ce-db1938dd0fc5)
+SRCC : 0.9282
+PLCC : 0.9412
+
+<br>
+
+### Results ver2
+ARNIQA + SE(Squeeze-and-Excitation) & Random Forest Regressor
+![image](https://github.com/user-attachments/assets/a40ad223-3759-4891-a0ce-db1938dd0fc5)
+SRCC : 0.9408
+PLCC : 0.9528
+
+
+
+
+
+
 
