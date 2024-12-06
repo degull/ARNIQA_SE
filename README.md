@@ -48,7 +48,7 @@ This work was partially supported by the European Commission under European Hori
 
 ### 기존 ARN-IQA와의 차이점
 
-| **구분**               | **기존 ARN-IQA**                           | **현재 코드**                                   |
+| **구분**               | **ARNIQA**                           | **ARNIQA+SE**                                   |
 |------------------------|-------------------------------------------|-----------------------------------------------|
 | **Backbone**           | ResNet50                                 | SE 블록이 포함된 ResNet50 (`ResNetSE`)        |
 | **SE 블록**            | 없음                                      | Bottleneck 블록에 추가된 SE 블록              |
