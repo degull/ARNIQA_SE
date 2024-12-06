@@ -72,15 +72,6 @@ PLCC : 0.9412
 ---
 
 
-### Results ver2
-- ARNIQA + SE(Squeeze-and-Excitation) & Random Forest Regressor
-![image](https://github.com/user-attachments/assets/a40ad223-3759-4891-a0ce-db1938dd0fc5)
-<br>
-SRCC : 0.9408
-<br>
-PLCC : 0.9528
-
-
 
 
 
