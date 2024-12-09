@@ -72,7 +72,14 @@ PLCC : 0.9412
 ---
 
 
+<br>
 
+## train.py
+
+```
+python train.py --config "E:/ARNIQA - SE/ARNIQA/config.yaml"
+
+```
 
 
 
