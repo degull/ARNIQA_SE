@@ -8,7 +8,7 @@ checkpoint_frequency: 1
 
 # Training
 training:
-  epochs: 1
+  epochs: 10
   learning_rate: !!float 1e-3
   batch_size: 16
   num_workers: 20
