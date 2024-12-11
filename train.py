@@ -907,15 +907,18 @@ def save_checkpoint(model: nn.Module, checkpoint_path: Path, epoch: int, srocc: 
     filename = f"epoch_{epoch}_srocc_{srocc:.3f}.pth"
     torch.save(model.state_dict(), checkpoint_path / filename)
 
-def verify_positive_pairs(distortions_A, distortions_B):
-    
-    # 양성쌍이 동일한 왜곡이 적용되었는지 확인합니다.
-    
+def verify_positive_pairs(distortions_A, distortions_B, applied_distortions_A, applied_distortions_B):
+    # 양성 쌍이 동일한 왜곡이 적용되었는지 확인합니다.
     if distortions_A == distortions_B:
-        print("[Positive Pair Verification] Success: Distortions match.")
+        print(f"[Positive Pair Verification] Success: Distortions match.")
+        print(f"Applied Distortions for A: {applied_distortions_A}")
+        print(f"Applied Distortions for B: {applied_distortions_B}")
     else:
-        print("[Positive Pair Verification] Error: Distortions do not match.")
+        print(f"[Positive Pair Verification] Error: Distortions do not match.")
         print(f"distortions_A: {distortions_A}, distortions_B: {distortions_B}")
+        print(f"Applied Distortions for A: {applied_distortions_A}")
+        print(f"Applied Distortions for B: {applied_distortions_B}")
+
 
 def verify_hard_negatives(original_shape, downscaled_shape):
     
@@ -970,7 +973,8 @@ def validate(args: DotMap, model: nn.Module, val_dataloader: DataLoader, device:
     avg_srocc = np.mean(srocc_list) if srocc_list else 0
     avg_plcc = np.mean(plcc_list) if plcc_list else 0
     return avg_srocc, avg_plcc
-
+""" 
+# 이게 원본 
 def train(args: DotMap,
           model: nn.Module,
           train_dataloader: DataLoader,
@@ -1048,6 +1052,101 @@ def train(args: DotMap,
             save_checkpoint(model, checkpoint_path, epoch, best_srocc)
 
     print("Finished training")
+
+ """
+
+
+
+def train(args: DotMap,
+          model: nn.Module,
+          train_dataloader: DataLoader,
+          val_dataloader: DataLoader,
+          test_dataloader: DataLoader,
+          optimizer: torch.optim.Optimizer,
+          lr_scheduler: torch.optim.lr_scheduler.StepLR,
+          scaler: torch.cuda.amp.GradScaler,
+          device: torch.device,) -> None:
+    # checkpoint_path는 args에서 가져옴
+    checkpoint_path = Path(str(args.checkpoint_base_path))
+    checkpoint_path.mkdir(parents=True, exist_ok=True)
+
+    best_srocc = 0
+    train_metrics = {'srcc': [], 'plcc': []}
+    val_metrics = {'srcc': [], 'plcc': []}
+    test_metrics = {'srcc': [], 'plcc': []}
+
+    for epoch in range(args.training.epochs):
+        model.train()
+        running_loss = 0.0
+        progress_bar = tqdm(train_dataloader, desc=f"Epoch [{epoch + 1}/{args.training.epochs}]")
+
+        for i, batch in enumerate(progress_bar):
+            inputs_A = batch["img_A"].to(device)
+            inputs_B = batch["img_B"].to(device)
+
+            shared_distortion = random.choice(
+                ["gaussian_blur", "lens_blur", "motion_blur", "color_diffusion", "color_shift", "color_quantization", "color_saturation_1", "color_saturation_2",
+                 "jpeg2000", "jpeg", "white_noise", "white_noise_color_component", "impulse_noise", "multiplicative_noise", "denoise", "brighten", "darken",
+                 "mean_shift", "jitter", "non_eccentricity_patch", "pixelate", "quantization", "color_block", "high_sharpen", "contrast_change", "blur", "noise"])
+
+            inputs_A, distortions_A = apply_random_distortions(inputs_A, shared_distortion=shared_distortion, return_info=True)
+            inputs_B, distortions_B = apply_random_distortions(inputs_B, shared_distortion=shared_distortion, return_info=True)
+
+            verify_positive_pairs(distortions_A, distortions_B, distortions_A, distortions_B)
+
+            if inputs_A.dim() == 4:
+                inputs_A = inputs_A.unsqueeze(1)
+            if inputs_B.dim() == 4:
+                inputs_B = inputs_B.unsqueeze(1)
+
+            inputs_A = inputs_A.expand(-1, 2, -1, -1, -1)
+            inputs_B = inputs_B.expand(-1, 2, -1, -1, -1)
+
+            hard_negatives = generate_hard_negatives(inputs_B, scale_factor=0.5)
+            if inputs_B.shape[0] == hard_negatives.shape[0]:
+                print("[Hard Negative Verification] Success: Hard negatives are correctly downscaled.")
+
+            optimizer.zero_grad()
+            with torch.cuda.amp.autocast():
+                proj_A, proj_B = model(inputs_A, inputs_B)
+                loss = model.compute_loss(proj_A, proj_B, hard_negatives)
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+
+            running_loss += loss.item()
+            progress_bar.set_postfix(loss=running_loss / (i + 1))
+
+        lr_scheduler.step()
+
+        # Validation Metrics
+        avg_srocc_val, avg_plcc_val = validate(args, model, val_dataloader, device)
+        avg_srocc_train, avg_plcc_train = validate(args, model, train_dataloader, device)
+        avg_srocc_test, avg_plcc_test = validate(args, model, test_dataloader, device)
+
+        train_metrics['srcc'].append(avg_srocc_train)
+        train_metrics['plcc'].append(avg_plcc_train)
+        val_metrics['srcc'].append(avg_srocc_val)
+        val_metrics['plcc'].append(avg_plcc_val)
+        test_metrics['srcc'].append(avg_srocc_test)
+        test_metrics['plcc'].append(avg_plcc_test)
+
+        print(f"Epoch {epoch + 1} Training Results: SRCC = {avg_srocc_train:.4f}, PLCC = {avg_plcc_train:.4f}")
+        print(f"Epoch {epoch + 1} Validation Results: SRCC = {avg_srocc_val:.4f}, PLCC = {avg_plcc_val:.4f}")
+        print(f"Epoch {epoch + 1} Test Results: SRCC = {avg_srocc_test:.4f}, PLCC = {avg_plcc_test:.4f}")
+
+        # Save checkpoint if validation SRCC is the best
+        if avg_srocc_val > best_srocc:
+            best_srocc = avg_srocc_val
+            save_checkpoint(model, checkpoint_path, epoch, best_srocc)
+
+    print("Finished training")
+
+    return train_metrics, val_metrics, test_metrics
+
+    
+
 
 def optimize_ridge_alpha(embeddings, mos_scores):
     
@@ -1149,10 +1248,10 @@ def plot_results(mos_scores, predictions):
 if __name__ == "__main__":
     # Config 경로 설정
     config_path = "E:/ARNIQA - SE/ARNIQA/config.yaml"
-    config = load_config(config_path)
+    args = load_config(config_path)  # args를 config에서 로드
 
-    device = torch.device(f"cuda:{config.device}" if torch.cuda.is_available() else "cpu")
-    dataset_path = Path(config.data_base_path) / "kadid10k.csv"
+    device = torch.device(f"cuda:{args.device}" if torch.cuda.is_available() else "cpu")
+    dataset_path = Path(args.data_base_path) / "kadid10k.csv"
     dataset = KADID10KDataset(dataset_path)
 
     train_size = int(0.7 * len(dataset))
@@ -1162,41 +1261,51 @@ if __name__ == "__main__":
 
     train_dataloader = DataLoader(
         train_dataset,
-        batch_size=config.training.batch_size,
+        batch_size=args.training.batch_size,
         shuffle=True,
-        num_workers=min(config.training.num_workers, 16),
+        num_workers=min(args.training.num_workers, 16),
     )
     val_dataloader = DataLoader(
         val_dataset,
-        batch_size=config.training.batch_size,
+        batch_size=args.training.batch_size,
         shuffle=False,
-        num_workers=min(config.training.num_workers, 16),
+        num_workers=min(args.training.num_workers, 16),
     )
     test_dataloader = DataLoader(
         test_dataset,
-        batch_size=config.training.batch_size,
+        batch_size=args.training.batch_size,
         shuffle=False,
-        num_workers=min(config.training.num_workers, 16),
+        num_workers=min(args.training.num_workers, 16),
     )
 
     # 모델, 옵티마이저, 스케줄러 초기화
-    model = SimCLR(encoder_params=DotMap(config.model.encoder), temperature=config.model.temperature).to(device)
+    model = SimCLR(encoder_params=DotMap(args.model.encoder), temperature=args.model.temperature).to(device)
     optimizer = torch.optim.SGD(
         model.parameters(),
-        lr=config.training.learning_rate,
-        momentum=config.training.optimizer.momentum,
-        weight_decay=config.training.optimizer.weight_decay,
+        lr=args.training.learning_rate,
+        momentum=args.training.optimizer.momentum,
+        weight_decay=args.training.optimizer.weight_decay,
     )
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
         optimizer,
-        T_0=config.training.lr_scheduler.T_0,
-        T_mult=config.training.lr_scheduler.T_mult,
-        eta_min=config.training.lr_scheduler.eta_min,
+        T_0=args.training.lr_scheduler.T_0,
+        T_mult=args.training.lr_scheduler.T_mult,
+        eta_min=args.training.lr_scheduler.eta_min,
     )
     scaler = torch.amp.GradScaler()
 
-    # 모델 학습
-    train(config, model, train_dataloader, val_dataloader, optimizer, lr_scheduler, scaler, device)
+    # train 함수 호출
+    train_metrics, val_metrics, test_metrics = train(
+        args,  # args를 전달
+        model, 
+        train_dataloader, 
+        val_dataloader, 
+        test_dataloader,  # test_dataloader 추가
+        optimizer, 
+        lr_scheduler, 
+        scaler, 
+        device  # device 인자 추가
+    )
 
     # Ridge Regressor 학습 (Train 데이터 사용)
     regressor = train_ridge_regressor(model, train_dataloader, device)
@@ -1217,6 +1326,14 @@ if __name__ == "__main__":
 
     # 그래프 출력 (Test 결과)
     plot_results(test_mos_scores, test_predictions)
+
+    def format_metrics(metrics):
+        return {key: [round(value, 4) for value in values] for key, values in metrics.items()}
+
+    print("\nTraining Metrics:", format_metrics(train_metrics))
+    print("Validation Metrics:", format_metrics(val_metrics))
+    print("Test Metrics:", format_metrics(test_metrics))
+
 
 
 # Final embeddings shape: (9974, 2048)

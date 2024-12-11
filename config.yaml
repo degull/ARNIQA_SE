@@ -6,9 +6,9 @@ data_base_path: "E:/ARNIQA - SE/ARNIQA/dataset/KADID10K"
 checkpoint_base_path: "E:/ARNIQA - SE/ARNIQA/experiments/my_experiment/regressors"
 checkpoint_frequency: 1
 
-# Training
+# Training settings
 training:
-  epochs: 10
+  epochs: 1
   learning_rate: !!float 1e-3
   batch_size: 16
   num_workers: 20
@@ -19,10 +19,11 @@ training:
   dropout_rate: 0.1
   data:
     patch_size: 224
-    max_distortions: 4
+    max_distortions: 4  # Maximum number of distortions per image
     num_levels: 5
     pristine_prob: 0.05
-    augmentations:
+    distortions_per_group: 2  # Number of distortions per group
+    augmentations:  # Here you can still apply general augmentations
       horizontal_flip: true
       rotation: 15
       color_jitter:
@@ -34,6 +35,7 @@ training:
       normalize:
         mean: [0.485, 0.456, 0.406]
         std: [0.229, 0.224, 0.225]
+
   optimizer:
     name: SGD
     momentum: 0.9
