@@ -49,6 +49,86 @@ dither_cpp.argtypes = [
     ctypes.c_int   # nc (채널 개수)
 ]
 
+# distortions.py 수정
+
+import random
+import numpy as np
+import torch
+from PIL import ImageFilter
+
+def apply_random_distortions(images, num_distortions=4, return_info=False):
+    """
+    주어진 이미지에 최대 4개의 랜덤 왜곡을 순차적으로 적용합니다.
+    
+    Args:
+        images (torch.Tensor): 입력 이미지 텐서 [batch_size, C, H, W].
+        num_distortions (int): 적용할 왜곡의 최대 개수 (기본값 4).
+        return_info (bool): 적용된 왜곡의 정보를 반환할지 여부.
+    
+    Returns:
+        torch.Tensor: 왜곡된 이미지.
+        list (optional): 적용된 왜곡의 목록 (return_info가 True일 경우).
+    """
+    distortions = [
+        "gaussian_blur", "lens_blur", "motion_blur", "color_diffusion", "color_shift", 
+        "color_quantization", "color_saturation_1", "color_saturation_2", "jpeg2000", 
+        "jpeg", "white_noise", "white_noise_color_component", "impulse_noise", 
+        "multiplicative_noise", "denoise", "brighten", "darken", "mean_shift", 
+        "jitter", "non_eccentricity_patch", "pixelate", "quantization", "color_block", 
+        "high_sharpen", "contrast_change", "blur", "noise"
+    ]
+    
+    applied_distortions = []
+    
+    for i in range(images.size(0)):  # 배치 크기만큼 반복
+        selected_distortions = random.sample(distortions, num_distortions)  # 왜곡 4개 랜덤 선택
+        image = images[i]
+        
+        for distortion in selected_distortions:
+            if distortion == "gaussian_blur":
+                radius = random.randint(1, 5)
+                image = image.filter(ImageFilter.GaussianBlur(radius=radius))
+            elif distortion == "lens_blur":
+                radius = random.randint(1, 5)
+                image = image.filter(ImageFilter.GaussianBlur(radius=radius))
+            elif distortion == "motion_blur":
+                radius = random.randint(1, 5)
+                image = image.filter(ImageFilter.BoxBlur(radius))
+            elif distortion == "color_diffusion":
+                intensity = random.uniform(0.1, 1.0)
+                image = image.convert("RGB")
+                diffused = np.array(image)
+                diffused = diffused + np.random.uniform(-intensity, intensity, diffused.shape)
+                image = Image.fromarray(np.clip(diffused, 0, 255).astype(np.uint8))
+            elif distortion == "color_shift":
+                shift_amount = random.randint(-30, 30)
+                image = image.convert("RGB")
+                shifted = np.array(image)
+                shifted = shifted + np.random.randint(-shift_amount, shift_amount, shifted.shape)
+                image = Image.fromarray(np.clip(shifted, 0, 255).astype(np.uint8))
+            elif distortion == "jpeg2000":
+                image = image.convert("RGB")
+                image = image.resize((image.width // 2, image.height // 2))  # Simulate compression by resizing
+            elif distortion == "white_noise":
+                noise = np.random.normal(0, 0.1, (image.height, image.width, 3))
+                noisy_image = np.array(image) + noise
+                image = Image.fromarray(np.clip(noisy_image, 0, 255).astype(np.uint8))
+            elif distortion == "impulse_noise":
+                image = np.array(image)
+                prob = 0.1
+                for i in range(image.shape[0]):
+                    for j in range(image.shape[1]):
+                        if random.random() < prob:
+                            image[i][j] = np.random.choice([0, 255], size=3)
+                image = Image.fromarray(image)
+
+        applied_distortions.append(selected_distortions)
+    
+    if return_info:
+        return images, applied_distortions
+    return images
+
+
 # 필터 / 왜곡 함수들 정의
 def gaussian_blur(x: torch.Tensor, blur_sigma: int = 0.1) -> torch.Tensor:
     fs = 2 * math.ceil(2 * blur_sigma) + 1

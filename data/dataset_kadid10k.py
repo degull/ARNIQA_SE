@@ -367,6 +367,8 @@ class KADID10KDataset(Dataset):
         
         return image
     
+
+    
     def apply_distortion(image, distortion, level):
         if distortion == "gaussian_blur":
             image = image.filter(ImageFilter.GaussianBlur(radius=level))
