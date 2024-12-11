@@ -874,7 +874,7 @@ if __name__ == "__main__":
 # train & ridge regressor에 대한 모든 검증 완완완
 # 실행할거면 이거 실행해야됨
 
-
+""" 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
@@ -973,87 +973,6 @@ def validate(args: DotMap, model: nn.Module, val_dataloader: DataLoader, device:
     avg_srocc = np.mean(srocc_list) if srocc_list else 0
     avg_plcc = np.mean(plcc_list) if plcc_list else 0
     return avg_srocc, avg_plcc
-""" 
-# 이게 원본 
-def train(args: DotMap,
-          model: nn.Module,
-          train_dataloader: DataLoader,
-          val_dataloader: DataLoader,
-          optimizer: torch.optim.Optimizer,
-          lr_scheduler: torch.optim.lr_scheduler.StepLR,
-          scaler: torch.cuda.amp.GradScaler,
-          device: torch.device) -> None:
-    # 수정된 checkpoint_path
-    checkpoint_path = Path(str(args.checkpoint_path))
-    checkpoint_path.mkdir(parents=True, exist_ok=True)
-
-    best_srocc = 0
-    for epoch in range(args.training.epochs):
-        model.train()
-        running_loss = 0.0
-        progress_bar = tqdm(train_dataloader, desc=f"Epoch [{epoch + 1}/{args.training.epochs}]")
-
-        for i, batch in enumerate(progress_bar):
-            inputs_A = batch["img_A"].to(device)
-            inputs_B = batch["img_B"].to(device)
-
-            # 동일한 왜곡을 적용하도록 shared_distortion 설정
-            shared_distortion = random.choice(
-                ["gaussian_blur", "lens_blur", "motion_blur", "color_diffusion", "color_shift", "color_quantization", "color_saturation_1", "color_saturation_2",
-                 "jpeg2000", "jpeg", "white_noise", "white_noise_color_component", "impulse_noise", "multiplicative_noise", "denoise", "brighten", "darken",
-                 "mean_shift", "jitter", "non_eccentricity_patch", "pixelate", "quantization", "color_block", "high_sharpen", "contrast_change", "blur", "noise"])
-                 
-            inputs_A, distortions_A = apply_random_distortions(inputs_A, shared_distortion=shared_distortion, return_info=True)
-            inputs_B, distortions_B = apply_random_distortions(inputs_B, shared_distortion=shared_distortion, return_info=True)
-
-            # 양성 쌍 검증
-            if distortions_A == distortions_B:
-                print("[Positive Pair Verification] Success: Distortions match.")
-            else:
-                print(f"[Positive Pair Verification] Error: Distortions do not match.\n"
-                      f"distortions_A: {distortions_A}, distortions_B: {distortions_B}")
-
-            # 입력 데이터가 5차원([batch_size, C, H, W])인 경우에만 unsqueeze 호출
-            if inputs_A.dim() == 4:
-                inputs_A = inputs_A.unsqueeze(1)
-            if inputs_B.dim() == 4:
-                inputs_B = inputs_B.unsqueeze(1)
-
-            # num_crops 차원을 2로 확장
-            inputs_A = inputs_A.expand(-1, 2, -1, -1, -1)
-            inputs_B = inputs_B.expand(-1, 2, -1, -1, -1)
-
-            # 경음성 쌍 생성 및 검증
-            hard_negatives = generate_hard_negatives(inputs_B, scale_factor=0.5)
-            if inputs_B.shape[0] == hard_negatives.shape[0]:
-                print("[Hard Negative Verification] Success: Hard negatives are correctly downscaled.")
-            else:
-                print(f"[Hard Negative Verification] Error: Shape mismatch.\n"
-                      f"inputs_B shape: {inputs_B.shape}, hard_negatives shape: {hard_negatives.shape}")
-
-            optimizer.zero_grad()
-            with torch.cuda.amp.autocast():
-                proj_A, proj_B = model(inputs_A, inputs_B)
-                loss = model.compute_loss(proj_A, proj_B, hard_negatives)
-
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-
-            running_loss += loss.item()
-            progress_bar.set_postfix(loss=running_loss / (i + 1))
-
-        lr_scheduler.step()
-        avg_srocc_val, avg_plcc_val = validate(args, model, val_dataloader, device)
-        print(f"Epoch [{epoch + 1}] Validation Results: SRCC = {avg_srocc_val:.4f}, PLCC = {avg_plcc_val:.4f}")
-
-        if avg_srocc_val > best_srocc:
-            best_srocc = avg_srocc_val
-            save_checkpoint(model, checkpoint_path, epoch, best_srocc)
-
-    print("Finished training")
-
- """
 
 
 
@@ -1334,16 +1253,11 @@ if __name__ == "__main__":
     print("Validation Metrics:", format_metrics(val_metrics))
     print("Test Metrics:", format_metrics(test_metrics))
 
+ """
 
 
-# Final embeddings shape: (9974, 2048)
-# Final MOS scores shape: (9974,)
-# Optimal alpha: 0.01
 
-
-# kadid ver4 (regressor -> random forest)
-# 그냥 해본 거 (의미x)
-""" 
+# regressor 분리코드
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
@@ -1358,16 +1272,12 @@ from models.simclr import SimCLR
 from utils.utils import parse_config
 from utils.utils_distortions import apply_random_distortions, generate_hard_negatives
 import matplotlib.pyplot as plt
+import pickle
 import random
 from typing import Tuple
 import argparse
-from sklearn.linear_model import Ridge
-from scipy import stats
-import yaml
 from sklearn.model_selection import GridSearchCV
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_squared_error, r2_score
-import time
+import yaml
 
 # Config loader
 def load_config(config_path: str) -> DotMap:
@@ -1375,45 +1285,14 @@ def load_config(config_path: str) -> DotMap:
         config = yaml.safe_load(file)
     return DotMap(config)
 
-def save_checkpoint(model: nn.Module, checkpoint_path: Path, epoch: int, srocc: float) -> None:
-    filename = f"epoch_{epoch}_srocc_{srocc:.3f}.pth"
-    torch.save(model.state_dict(), checkpoint_path / filename)
+# Save SimCLR Model and Ridge Regressor
+def save_model_and_regressor(model, regressor, model_save_path, regressor_save_path):
+    torch.save(model.state_dict(), model_save_path)
+    print(f"[INFO] SimCLR Model saved at: {model_save_path}")
 
-def verify_positive_pairs(distortions_A, distortions_B):
-    
-    # 양성쌍이 동일한 왜곡이 적용되었는지 확인합니다.
-    
-    if distortions_A == distortions_B:
-        print("[Positive Pair Verification] Success: Distortions match.")
-    else:
-        print("[Positive Pair Verification] Error: Distortions do not match.")
-        print(f"distortions_A: {distortions_A}, distortions_B: {distortions_B}")
-
-def verify_hard_negatives(original_shape, downscaled_shape):
-    
-    # 경음성쌍이 정확히 50%로 다운스케일 되었는지 확인합니다.
-    
-    expected_shape = (original_shape[-2] // 2, original_shape[-1] // 2)
-    if downscaled_shape[-2:] == expected_shape:
-        print("[Hard Negative Verification] Success: Hard negatives are correctly downscaled.")
-    else:
-        print("[Hard Negative Verification] Error: Hard negatives are not correctly downscaled.")
-        print(f"Expected: {expected_shape}, Got: {downscaled_shape[-2:]}")
-
-def calculate_srcc_plcc(proj_A, proj_B):
-    proj_A = proj_A.detach().cpu().numpy()
-    proj_B = proj_B.detach().cpu().numpy()
-    
-    # Ensure shapes are consistent
-    assert proj_A.shape == proj_B.shape, "Shape mismatch between proj_A and proj_B"
-
-    # Flatten both vectors for overall SRCC/PLCC
-    srocc, _ = stats.spearmanr(proj_A.flatten(), proj_B.flatten())
-    plcc, _ = stats.pearsonr(proj_A.flatten(), proj_B.flatten())
-    
-    return srocc, plcc
-
-
+    with open(regressor_save_path, "wb") as f:
+        pickle.dump(regressor, f)
+    print(f"[INFO] Ridge Regressor saved at: {regressor_save_path}")
 
 def validate(args: DotMap, model: nn.Module, val_dataloader: DataLoader, device: torch.device):
     model.eval()
@@ -1447,57 +1326,30 @@ def train(args: DotMap,
           model: nn.Module,
           train_dataloader: DataLoader,
           val_dataloader: DataLoader,
+          test_dataloader: DataLoader,
           optimizer: torch.optim.Optimizer,
           lr_scheduler: torch.optim.lr_scheduler.StepLR,
           scaler: torch.cuda.amp.GradScaler,
           device: torch.device) -> None:
-    # 수정된 checkpoint_path
-    checkpoint_path = Path(str(args.checkpoint_path))
-    checkpoint_path.mkdir(parents=True, exist_ok=True)
-
     best_srocc = 0
     for epoch in range(args.training.epochs):
         model.train()
         running_loss = 0.0
         progress_bar = tqdm(train_dataloader, desc=f"Epoch [{epoch + 1}/{args.training.epochs}]")
 
-        for i, batch in enumerate(progress_bar):
+        for batch in progress_bar:
             inputs_A = batch["img_A"].to(device)
             inputs_B = batch["img_B"].to(device)
 
-            # 동일한 왜곡을 적용하도록 shared_distortion 설정
-            shared_distortion = random.choice(
-                ["gaussian_blur", "lens_blur", "motion_blur", "color_diffusion", "color_shift", "color_quantization", "color_saturation_1", "color_saturation_2",
-                 "jpeg2000", "jpeg", "white_noise", "white_noise_color_component", "impulse_noise", "multiplicative_noise", "denoise", "brighten", "darken",
-                 "mean_shift", "jitter", "non_eccentricity_patch", "pixelate", "quantization", "color_block", "high_sharpen", "contrast_change", "blur", "noise"])
-                 
-            inputs_A, distortions_A = apply_random_distortions(inputs_A, shared_distortion=shared_distortion, return_info=True)
-            inputs_B, distortions_B = apply_random_distortions(inputs_B, shared_distortion=shared_distortion, return_info=True)
-
-            # 양성 쌍 검증
-            if distortions_A == distortions_B:
-                print("[Positive Pair Verification] Success: Distortions match.")
-            else:
-                print(f"[Positive Pair Verification] Error: Distortions do not match.\n"
-                      f"distortions_A: {distortions_A}, distortions_B: {distortions_B}")
-
-            # 입력 데이터가 5차원([batch_size, C, H, W])인 경우에만 unsqueeze 호출
             if inputs_A.dim() == 4:
                 inputs_A = inputs_A.unsqueeze(1)
             if inputs_B.dim() == 4:
                 inputs_B = inputs_B.unsqueeze(1)
 
-            # num_crops 차원을 2로 확장
             inputs_A = inputs_A.expand(-1, 2, -1, -1, -1)
             inputs_B = inputs_B.expand(-1, 2, -1, -1, -1)
 
-            # 경음성 쌍 생성 및 검증
             hard_negatives = generate_hard_negatives(inputs_B, scale_factor=0.5)
-            if inputs_B.shape[0] == hard_negatives.shape[0]:
-                print("[Hard Negative Verification] Success: Hard negatives are correctly downscaled.")
-            else:
-                print(f"[Hard Negative Verification] Error: Shape mismatch.\n"
-                      f"inputs_B shape: {inputs_B.shape}, hard_negatives shape: {hard_negatives.shape}")
 
             optimizer.zero_grad()
             with torch.cuda.amp.autocast():
@@ -1509,88 +1361,21 @@ def train(args: DotMap,
             scaler.update()
 
             running_loss += loss.item()
-            progress_bar.set_postfix(loss=running_loss / (i + 1))
+            progress_bar.set_postfix(loss=running_loss / len(train_dataloader))
 
         lr_scheduler.step()
+
         avg_srocc_val, avg_plcc_val = validate(args, model, val_dataloader, device)
-        print(f"Epoch [{epoch + 1}] Validation Results: SRCC = {avg_srocc_val:.4f}, PLCC = {avg_plcc_val:.4f}")
+        print(f"Epoch {epoch + 1}: Validation SRCC = {avg_srocc_val:.4f}, PLCC = {avg_plcc_val:.4f}")
 
-        if avg_srocc_val > best_srocc:
-            best_srocc = avg_srocc_val
-            save_checkpoint(model, checkpoint_path, epoch, best_srocc)
+    print("[INFO] Training complete.")
 
-    print("Finished training")
-
-def optimize_ridge_alpha(embeddings, mos_scores):
-    
-    # Ridge Regressor의 alpha 값을 최적화합니다.
-    
-    from sklearn.model_selection import GridSearchCV
-
-    param_grid = {'alpha': [0.01, 0.1, 1.0, 10.0, 100.0]}
-    ridge = Ridge()
-    grid = GridSearchCV(ridge, param_grid, scoring='r2', cv=5)
-    grid.fit(embeddings, mos_scores)
-
-    best_alpha = grid.best_params_['alpha']
-    print(f"Optimal alpha: {best_alpha}")
-    return Ridge(alpha=best_alpha).fit(embeddings, mos_scores)
-
-
-def train_random_forest(model: nn.Module, train_dataloader: DataLoader, device: torch.device):
+def train_ridge_regressor(model: nn.Module, train_dataloader: DataLoader, device: torch.device):
     model.eval()
     embeddings, mos_scores = [], []
 
     with torch.no_grad():
-        for batch_idx, batch in enumerate(train_dataloader):
-            inputs_A = batch["img_A"].to(device)
-            mos = batch["mos"]
-
-            if inputs_A.dim() == 4:
-                inputs_A = inputs_A.unsqueeze(1)
-
-            proj_A, _ = model(inputs_A, inputs_A)
-
-            # Debug: Shape 확인
-            print(f"[Batch {batch_idx}] proj_A shape: {proj_A.shape}, mos shape: {mos.shape}")
-
-            # MOS 점수 반복하여 임베딩과 크기 맞추기
-            repeat_factor = proj_A.shape[0] // mos.shape[0]
-            mos_repeated = np.repeat(mos.numpy(), repeat_factor)[:proj_A.shape[0]]
-
-            embeddings.append(proj_A.cpu().numpy())
-            mos_scores.append(mos_repeated)
-
-    embeddings = np.vstack(embeddings)
-    mos_scores = np.hstack(mos_scores)
-
-    # Debug: 최종 크기 출력
-    print(f"Final embeddings shape: {embeddings.shape}")
-    print(f"Final MOS scores shape: {mos_scores.shape}")
-
-    # Random Forest 학습 시작 로그
-    print("Defining the Random Forest model...")
-    regressor = RandomForestRegressor(
-        n_estimators=10,  # 트리 개수
-        max_depth=10,      # 최대 깊이
-        n_jobs=-1,         # 병렬 처리
-        random_state=42
-    )
-
-    print("Starting Random Forest training...")
-    start_time = time.time()
-    regressor.fit(embeddings, mos_scores)  # 학습
-    print(f"Random Forest training completed in {time.time() - start_time:.2f} seconds.")
-    
-    return regressor
-
-
-def evaluate_random_forest(regressor, model: nn.Module, val_dataloader: DataLoader, device: torch.device):
-    model.eval()
-    mos_scores, predictions = [], []
-
-    with torch.no_grad():
-        for batch_idx, batch in enumerate(val_dataloader):
+        for batch in train_dataloader:
             inputs_A = batch["img_A"].to(device)
             mos = batch["mos"]
 
@@ -1599,44 +1384,27 @@ def evaluate_random_forest(regressor, model: nn.Module, val_dataloader: DataLoad
                 inputs_A = inputs_A.expand(-1, 2, -1, -1, -1)
 
             proj_A, _ = model(inputs_A, inputs_A)
-            prediction = regressor.predict(proj_A.cpu().numpy())
+            embeddings.append(proj_A.cpu().numpy())
+            mos_scores.append(mos.cpu().numpy())
 
-            # MOS 점수 크기 맞추기
-            repeat_factor = proj_A.shape[0] // mos.shape[0]
-            mos_repeated = np.repeat(mos.numpy(), repeat_factor)[:proj_A.shape[0]]
-
-            predictions.append(prediction)
-            mos_scores.append(mos_repeated)
-
+    embeddings = np.vstack(embeddings)
     mos_scores = np.hstack(mos_scores)
-    predictions = np.hstack(predictions)
 
-    # Debug: 최종 크기 확인
-    print(f"Final mos_scores shape: {mos_scores.shape}, predictions shape: {predictions.shape}")
-    return mos_scores, predictions
+    param_grid = {'alpha': [0.01, 0.1, 1.0, 10.0, 100.0]}
+    ridge = Ridge()
+    grid = GridSearchCV(ridge, param_grid, scoring='r2', cv=5)
+    grid.fit(embeddings, mos_scores)
+    best_alpha = grid.best_params_['alpha']
+    print(f"[INFO] Optimal Ridge alpha: {best_alpha}")
 
-
-def plot_results_with_metrics(mos_scores, predictions, srcc, plcc):
-    print(f"Plotting results: mos_scores shape = {mos_scores.shape}, predictions shape = {predictions.shape}")
-    assert mos_scores.shape == predictions.shape, "mos_scores and predictions must have the same shape"
-
-    plt.figure(figsize=(8, 6))
-    plt.scatter(mos_scores, predictions, alpha=0.7, label='Predictions vs MOS')
-    plt.plot([min(mos_scores), max(mos_scores)], [min(mos_scores), max(mos_scores)], 'r--', label='Ideal')
-    plt.xlabel('Ground Truth MOS')
-    plt.ylabel('Predicted MOS')
-    plt.title(f'Random Forest Performance (SRCC: {srcc:.4f}, PLCC: {plcc:.4f})')
-    plt.legend()
-    plt.grid()
-    plt.show()
+    return Ridge(alpha=best_alpha).fit(embeddings, mos_scores)
 
 if __name__ == "__main__":
-    # Config 경로 설정
     config_path = "E:/ARNIQA - SE/ARNIQA/config.yaml"
-    config = load_config(config_path)
+    args = load_config(config_path)
 
-    device = torch.device(f"cuda:{config.device}" if torch.cuda.is_available() else "cpu")
-    dataset_path = Path(config.data_base_path) / "kadid10k.csv"
+    device = torch.device(f"cuda:{args.device}" if torch.cuda.is_available() else "cpu")
+    dataset_path = Path(args.data_base_path) / "kadid10k.csv"
     dataset = KADID10KDataset(dataset_path)
 
     train_size = int(0.7 * len(dataset))
@@ -1644,34 +1412,46 @@ if __name__ == "__main__":
     test_size = len(dataset) - train_size - val_size
     train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size])
 
-    train_dataloader = DataLoader(train_dataset, batch_size=config.training.batch_size, shuffle=True, num_workers=min(config.training.num_workers, 16))
-    val_dataloader = DataLoader(val_dataset, batch_size=config.training.batch_size, shuffle=False, num_workers=min(config.training.num_workers, 16))
-    test_dataloader = DataLoader(test_dataset, batch_size=config.training.batch_size, shuffle=False, num_workers=min(config.training.num_workers, 16))
+    train_dataloader = DataLoader(train_dataset, batch_size=args.training.batch_size, shuffle=True, num_workers=4)
+    val_dataloader = DataLoader(val_dataset, batch_size=args.training.batch_size, shuffle=False, num_workers=4)
+    test_dataloader = DataLoader(test_dataset, batch_size=args.training.batch_size, shuffle=False, num_workers=4)
 
-    model = SimCLR(encoder_params=DotMap(config.model.encoder), temperature=config.model.temperature).to(device)
-    optimizer = torch.optim.SGD(model.parameters(), lr=config.training.learning_rate, momentum=config.training.optimizer.momentum, weight_decay=config.training.optimizer.weight_decay)
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=config.training.lr_scheduler.T_0, T_mult=config.training.lr_scheduler.T_mult, eta_min=config.training.lr_scheduler.eta_min)
-    scaler = torch.amp.GradScaler()
+    model = SimCLR(encoder_params=args.model.encoder, temperature=args.model.temperature).to(device)
+    optimizer = torch.optim.SGD(
+        model.parameters(),
+        lr=args.training.learning_rate,
+        momentum=args.training.optimizer.momentum,
+        weight_decay=args.training.optimizer.weight_decay,
+    )
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer,
+        step_size=args.training.lr_scheduler.step_size,
+        gamma=args.training.lr_scheduler.gamma
+    )
+    scaler = torch.cuda.amp.GradScaler()
 
-    # Training
-    train(config, model, train_dataloader, val_dataloader, optimizer, lr_scheduler, scaler, device)
+    print("[INFO] Training SimCLR model...")
+    train(args, model, train_dataloader, val_dataloader, test_dataloader, optimizer, lr_scheduler, scaler, device)
 
-    # Train Random Forest
-    regressor = train_random_forest(model, train_dataloader, device)
+    print("[INFO] Training Ridge Regressor...")
+    regressor = train_ridge_regressor(model, train_dataloader, device)
 
-    # Evaluate Random Forest on Test Data
-    mos_scores, predictions = evaluate_random_forest(regressor, model, test_dataloader, device)
+    model_save_path = "E:/ARNIQA - SE/ARNIQA/experiments/my_experiment/regressors/simclr_model.pth"
+    regressor_save_path = "E:/ARNIQA - SE/ARNIQA/experiments/my_experiment/regressors/ridge_regressor.pkl"
 
-    # Calculate SRCC and PLCC
-    srcc, _ = stats.spearmanr(mos_scores, predictions)
-    plcc, _ = stats.pearsonr(mos_scores, predictions)
+    save_model_and_regressor(model, regressor, model_save_path, regressor_save_path)
 
-    print(f"Final Test Results: SRCC = {srcc:.4f}, PLCC = {plcc:.4f}")
+    print("[INFO] Model and Ridge Regressor saved.")
 
-    # Plot results with metrics
-    plot_results_with_metrics(mos_scores, predictions, srcc, plcc)
 
- """
+
+
+
+
+
+
+
+
 
 # ---------------------------------------------------------------#
 # 이 아래로 수정 안됨
