@@ -75,7 +75,7 @@ def plot_results(mos_scores, predictions):
 
 if __name__ == "__main__":
     # Paths
-    model_path = "E:/ARNIQA - SE/ARNIQA/experiments/my_experiment/regressors/epoch_5_srocc_0.938.pth"
+    model_path = "E:/ARNIQA - SE/ARNIQA/experiments/my_experiment/regressors/simclr_model.pth"
     regressor_path = "E:/ARNIQA - SE/ARNIQA/experiments/my_experiment/regressors/ridge_regressor.pkl"
     dataset_path = "E:/ARNIQA - SE/ARNIQA/dataset/KADID10K/kadid10k.csv"
 
